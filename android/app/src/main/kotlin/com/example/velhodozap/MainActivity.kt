@@ -4,6 +4,11 @@ import android.bluetooth.BluetoothAdapter
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ResolveInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
@@ -14,6 +19,7 @@ import android.net.wifi.WifiManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
     private val channelName = "velhodozap/platform_intents"
@@ -67,6 +73,20 @@ class MainActivity : FlutterActivity() {
                         } catch (e: Exception) {
                             result.success(false)
                         }
+                    }
+
+                    "listLaunchableApps" -> {
+                        result.success(listLaunchableApps())
+                    }
+
+                    "getAppIconPng" -> {
+                        val packageName = call.argument<String>("packageName")
+                        val size = call.argument<Int>("size") ?: 128
+                        if (packageName.isNullOrBlank()) {
+                            result.error("invalid_args", "packageName is required", null)
+                            return@setMethodCallHandler
+                        }
+                        result.success(getAppIconPng(packageName, size))
                     }
 
                     "getBluetoothEnabled" -> {
@@ -250,6 +270,53 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun listLaunchableApps(): List<Map<String, Any?>> {
+        val intent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+        val infos: List<ResolveInfo> = packageManager.queryIntentActivities(intent, 0)
+        val items =
+            infos.mapNotNull { ri ->
+                val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                val label =
+                    try {
+                        ri.loadLabel(packageManager)?.toString()?.trim().orEmpty()
+                    } catch (e: Exception) {
+                        ""
+                    }
+                if (pkg.isBlank()) return@mapNotNull null
+                mapOf(
+                    "packageName" to pkg,
+                    "label" to label.ifEmpty { pkg },
+                )
+            }
+        return items.sortedBy { (it["label"] as? String)?.lowercase().orEmpty() }
+    }
+
+    private fun getAppIconPng(packageName: String, size: Int): ByteArray? {
+        return try {
+            val icon: Drawable = packageManager.getApplicationIcon(packageName)
+            val bitmap = drawableToBitmap(icon, size.coerceAtLeast(48))
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            out.toByteArray()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun drawableToBitmap(drawable: Drawable, sizePx: Int): Bitmap {
+        if (drawable is BitmapDrawable) {
+            val b = drawable.bitmap
+            if (b != null && b.width > 0 && b.height > 0) {
+                return Bitmap.createScaledBitmap(b, sizePx, sizePx, true)
+            }
+        }
+        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, canvas.width, canvas.height)
+        drawable.draw(canvas)
+        return bitmap
     }
 
     private fun startWhatsAppCall(phoneRaw: String, isVideo: Boolean): Boolean {

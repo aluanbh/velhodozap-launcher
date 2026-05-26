@@ -72,6 +72,22 @@ final class PlatformIntents {
   static Future<Map<Object?, Object?>?> getWifiInfo() async {
     return await _channel.invokeMethod<Map<Object?, Object?>>('getWifiInfo');
   }
+
+  static Future<List<Map<Object?, Object?>>?> listLaunchableApps() async {
+    final raw = await _channel.invokeMethod<List<Object?>>('listLaunchableApps');
+    return raw?.whereType<Map<Object?, Object?>>().toList(growable: false);
+  }
+
+  static Future<Uint8List?> getAppIconPng({
+    required String packageName,
+    int size = 128,
+  }) async {
+    final bytes = await _channel.invokeMethod<Uint8List>('getAppIconPng', {
+      'packageName': packageName,
+      'size': size,
+    });
+    return bytes;
+  }
 }
 
 enum AppThemeId {
@@ -95,15 +111,63 @@ enum AppButtonId {
   youtube,
 }
 
+class CustomAppConfig {
+  final String packageName;
+  final String label;
+  final bool enabled;
+  final String? iconPngBase64;
+
+  const CustomAppConfig({
+    required this.packageName,
+    required this.label,
+    required this.enabled,
+    required this.iconPngBase64,
+  });
+
+  CustomAppConfig copyWith({
+    String? packageName,
+    String? label,
+    bool? enabled,
+    String? iconPngBase64,
+  }) {
+    return CustomAppConfig(
+      packageName: packageName ?? this.packageName,
+      label: label ?? this.label,
+      enabled: enabled ?? this.enabled,
+      iconPngBase64: iconPngBase64 ?? this.iconPngBase64,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'packageName': packageName,
+      'label': label,
+      'enabled': enabled,
+      'iconPngBase64': iconPngBase64,
+    };
+  }
+
+  factory CustomAppConfig.fromJson(Map<String, dynamic> json) {
+    return CustomAppConfig(
+      packageName: (json['packageName'] as String?)?.trim() ?? '',
+      label: (json['label'] as String?)?.trim() ?? '',
+      enabled: (json['enabled'] as bool?) ?? true,
+      iconPngBase64: (json['iconPngBase64'] as String?)?.trim(),
+    );
+  }
+}
+
 class HomeConfig {
   final AppThemeId themeId;
   final List<StatusItemId> statusItems;
   final List<AppButtonId> appButtons;
+  final List<CustomAppConfig> customApps;
 
   const HomeConfig({
     required this.themeId,
     required this.statusItems,
     required this.appButtons,
+    required this.customApps,
   });
 
   factory HomeConfig.defaults() {
@@ -121,6 +185,7 @@ class HomeConfig {
         AppButtonId.whatsapp,
         AppButtonId.youtube,
       ],
+      customApps: [],
     );
   }
 
@@ -128,11 +193,13 @@ class HomeConfig {
     AppThemeId? themeId,
     List<StatusItemId>? statusItems,
     List<AppButtonId>? appButtons,
+    List<CustomAppConfig>? customApps,
   }) {
     return HomeConfig(
       themeId: themeId ?? this.themeId,
       statusItems: statusItems ?? this.statusItems,
       appButtons: appButtons ?? this.appButtons,
+      customApps: customApps ?? this.customApps,
     );
   }
 
@@ -141,6 +208,7 @@ class HomeConfig {
       'themeId': themeId.name,
       'statusItems': statusItems.map((e) => e.name).toList(growable: false),
       'appButtons': appButtons.map((e) => e.name).toList(growable: false),
+      'customApps': customApps.map((e) => e.toJson()).toList(growable: false),
     };
   }
 
@@ -199,13 +267,39 @@ class HomeConfig {
       if (!appButtons.contains(item)) appButtons.add(item);
     }
 
+    final customRaw = (json['customApps'] as List?)?.whereType<Map>().toList() ?? const <Map>[];
+    final customApps = <CustomAppConfig>[];
+    for (final m in customRaw) {
+      final parsed = CustomAppConfig.fromJson(Map<String, dynamic>.from(m));
+      if (parsed.packageName.isEmpty) continue;
+      if (customApps.any((e) => e.packageName == parsed.packageName)) continue;
+      customApps.add(parsed.copyWith(label: parsed.label.isEmpty ? parsed.packageName : parsed.label));
+    }
+
     final sanitizedStatus = statusItems.isEmpty ? const [StatusItemId.battery] : statusItems.take(4).toList();
     final sanitizedApps = appButtons.isEmpty ? const [AppButtonId.phone] : appButtons.take(8).toList();
+
+    final enabledCustom = customApps.where((e) => e.enabled).length;
+    final totalEnabled = sanitizedApps.length + enabledCustom;
+    final cappedCustomApps = customApps.toList(growable: true);
+    if (totalEnabled > 8) {
+      var overflow = totalEnabled - 8;
+      for (var i = cappedCustomApps.length - 1; i >= 0 && overflow > 0; i--) {
+        if (!cappedCustomApps[i].enabled) continue;
+        cappedCustomApps[i] = cappedCustomApps[i].copyWith(enabled: false);
+        overflow--;
+      }
+    }
+
+    final finalBuiltIn = sanitizedApps.isEmpty ? const [AppButtonId.phone] : sanitizedApps;
+    final finalEnabledCount = finalBuiltIn.length + cappedCustomApps.where((e) => e.enabled).length;
+    final finalApps = finalEnabledCount == 0 ? const [AppButtonId.phone] : finalBuiltIn;
 
     return HomeConfig(
       themeId: themeId,
       statusItems: sanitizedStatus,
-      appButtons: sanitizedApps,
+      appButtons: finalApps,
+      customApps: cappedCustomApps,
     );
   }
 }
@@ -262,18 +356,80 @@ class HomeConfigStore extends ChangeNotifier {
 
   Future<bool> setAppEnabled(AppButtonId item, bool enabled) async {
     final list = _config.appButtons.toList(growable: true);
+    int enabledCount() => list.length + _config.customApps.where((e) => e.enabled).length;
     if (enabled) {
       if (list.contains(item)) return true;
-      if (list.length >= 8) return false;
+      if (enabledCount() >= 8) return false;
       list.add(item);
     } else {
       list.remove(item);
-      if (list.isEmpty) {
+      if (list.isEmpty && !_config.customApps.any((e) => e.enabled)) {
         list.add(AppButtonId.phone);
       }
     }
 
     _config = _config.copyWith(appButtons: list);
+    await _save();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> addCustomApp(CustomAppConfig app) async {
+    final pkg = app.packageName.trim();
+    if (pkg.isEmpty) return false;
+
+    final list = _config.customApps.toList(growable: true);
+    final idx = list.indexWhere((e) => e.packageName == pkg);
+    final currentBuiltInEnabled = _config.appButtons.length;
+    final currentCustomEnabled = list.where((e) => e.enabled).length;
+    final enabledCount = currentBuiltInEnabled + currentCustomEnabled;
+
+    final willEnable = app.enabled;
+    if (willEnable && enabledCount >= 8 && (idx == -1 || !list[idx].enabled)) {
+      return false;
+    }
+
+    if (idx >= 0) {
+      list[idx] = list[idx].copyWith(
+        label: app.label.isEmpty ? list[idx].label : app.label,
+        enabled: app.enabled,
+        iconPngBase64: app.iconPngBase64 ?? list[idx].iconPngBase64,
+      );
+    } else {
+      list.add(app.copyWith(label: app.label.isEmpty ? pkg : app.label));
+    }
+
+    _config = _config.copyWith(customApps: list);
+    await _save();
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> setCustomAppEnabled(String packageName, bool enabled) async {
+    final pkg = packageName.trim();
+    if (pkg.isEmpty) return false;
+
+    final list = _config.customApps.toList(growable: true);
+    final idx = list.indexWhere((e) => e.packageName == pkg);
+    if (idx < 0) return false;
+
+    if (enabled) {
+      final enabledCount = _config.appButtons.length + list.where((e) => e.enabled).length;
+      if (enabledCount >= 8 && !list[idx].enabled) return false;
+      list[idx] = list[idx].copyWith(enabled: true);
+    } else {
+      list[idx] = list[idx].copyWith(enabled: false);
+      final builtInEnabled = _config.appButtons.isNotEmpty;
+      final anyCustomEnabled = list.any((e) => e.enabled);
+      if (!builtInEnabled && !anyCustomEnabled) {
+        _config = _config.copyWith(appButtons: const [AppButtonId.phone], customApps: list);
+        await _save();
+        notifyListeners();
+        return true;
+      }
+    }
+
+    _config = _config.copyWith(customApps: list);
     await _save();
     notifyListeners();
     return true;
@@ -916,16 +1072,81 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final item in config.appButtons) {
       switch (item) {
         case AppButtonId.phone:
-          tiles.add(_BigTile(label: 'Telefone', icon: Icons.phone, onTap: _openDialer));
+          tiles.add(
+            _BigTile(
+              label: 'Telefone',
+              icon: const Icon(Icons.phone, size: 64, color: Colors.white),
+              onTap: _openDialer,
+            ),
+          );
         case AppButtonId.contacts:
-          tiles.add(_BigTile(label: 'Contatos', icon: Icons.person, onTap: _openContacts));
+          tiles.add(
+            _BigTile(
+              label: 'Contatos',
+              icon: const Icon(Icons.person, size: 64, color: Colors.white),
+              onTap: _openContacts,
+            ),
+          );
         case AppButtonId.whatsapp:
-          tiles.add(_BigTile(label: 'WhatsApp', icon: FontAwesomeIcons.whatsapp, onTap: _openWhatsApp));
+          tiles.add(
+            _BigTile(
+              label: 'WhatsApp',
+              icon: const Icon(FontAwesomeIcons.whatsapp, size: 64, color: Colors.white),
+              onTap: _openWhatsApp,
+            ),
+          );
         case AppButtonId.youtube:
-          tiles.add(_BigTile(label: 'YouTube', icon: FontAwesomeIcons.youtube, onTap: _openYouTube));
+          tiles.add(
+            _BigTile(
+              label: 'YouTube',
+              icon: const Icon(FontAwesomeIcons.youtube, size: 64, color: Colors.white),
+              onTap: _openYouTube,
+            ),
+          );
       }
     }
+
+    for (final app in config.customApps) {
+      if (!app.enabled) continue;
+      tiles.add(
+        _BigTile(
+          label: app.label,
+          icon: _customAppIcon(app),
+          onTap: () async {
+            final ok = await PlatformIntents.openApp(packageName: app.packageName, relaunch: false);
+            if (!ok && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('App não instalado: ${app.label}')),
+              );
+            }
+          },
+        ),
+      );
+    }
+
     return tiles.take(8).toList(growable: false);
+  }
+
+  Widget _customAppIcon(CustomAppConfig app) {
+    final raw = app.iconPngBase64;
+    if (raw == null || raw.isEmpty) {
+      return const Icon(Icons.apps, size: 64, color: Colors.white);
+    }
+    try {
+      final bytes = base64Decode(raw);
+      return ColorFiltered(
+        colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcIn),
+        child: Image.memory(
+          bytes,
+          width: 64,
+          height: 64,
+          fit: BoxFit.contain,
+          filterQuality: FilterQuality.medium,
+        ),
+      );
+    } catch (_) {
+      return const Icon(Icons.apps, size: 64, color: Colors.white);
+    }
   }
 
   int _pickColumns({required int count, required double width}) {
@@ -1059,6 +1280,122 @@ class HomeCustomizationScreen extends StatelessWidget {
     };
   }
 
+  Widget _customAppSecondary(BuildContext context, CustomAppConfig app) {
+    final raw = app.iconPngBase64;
+    if (raw == null || raw.isEmpty) {
+      return const Icon(Icons.apps);
+    }
+    try {
+      final bytes = base64Decode(raw);
+      return ColorFiltered(
+        colorFilter: ColorFilter.mode(
+          Theme.of(context).brightness == Brightness.dark ? Colors.white70 : Colors.black87,
+          BlendMode.srcIn,
+        ),
+        child: Image.memory(bytes, width: 24, height: 24, fit: BoxFit.contain),
+      );
+    } catch (_) {
+      return const Icon(Icons.apps);
+    }
+  }
+
+  Future<void> _showAddAppSheet(BuildContext context, HomeConfigStore store) async {
+    final raw = await PlatformIntents.listLaunchableApps();
+    final apps = <({String packageName, String label})>[];
+    for (final m in raw ?? const <Map<Object?, Object?>>[]) {
+      final pkg = (m['packageName'] as String?)?.trim() ?? '';
+      final label = (m['label'] as String?)?.trim() ?? '';
+      if (pkg.isEmpty) continue;
+      apps.add((packageName: pkg, label: label.isEmpty ? pkg : label));
+    }
+    apps.sort((a, b) => a.label.toLowerCase().compareTo(b.label.toLowerCase()));
+
+    if (!context.mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        var q = '';
+        List<({String packageName, String label})> filtered() {
+          final s = q.trim().toLowerCase();
+          if (s.isEmpty) return apps;
+          return apps
+              .where(
+                (a) =>
+                    a.label.toLowerCase().contains(s) ||
+                    a.packageName.toLowerCase().contains(s),
+              )
+              .toList(growable: false);
+        }
+
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final list = filtered();
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    TextField(
+                      onChanged: (v) => setModalState(() => q = v),
+                      decoration: const InputDecoration(
+                        filled: true,
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.search),
+                        hintText: 'Procurar app',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: ListView.separated(
+                        itemCount: list.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, i) {
+                          final a = list[i];
+                          return ListTile(
+                            title: Text(
+                              a.label,
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                            ),
+                            subtitle: Text(a.packageName),
+                            trailing: const Icon(Icons.add),
+                            onTap: () async {
+                              final iconBytes = await PlatformIntents.getAppIconPng(
+                                packageName: a.packageName,
+                                size: 128,
+                              );
+                              final base64 = iconBytes == null ? null : base64Encode(iconBytes);
+                              final ok = await store.addCustomApp(
+                                CustomAppConfig(
+                                  packageName: a.packageName,
+                                  label: a.label,
+                                  enabled: true,
+                                  iconPngBase64: base64,
+                                ),
+                              );
+                              if (!context.mounted) return;
+                              if (!ok) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Máximo de 8 apps na tela inicial.')),
+                                );
+                                return;
+                              }
+                              Navigator.of(context).pop();
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = HomeConfigScope.of(context);
@@ -1074,6 +1411,7 @@ class HomeCustomizationScreen extends StatelessWidget {
         animation: store,
         builder: (context, _) {
           final config = store.config;
+          final enabledApps = config.appButtons.length + config.customApps.where((e) => e.enabled).length;
 
           return ListView(
             padding: const EdgeInsets.all(16),
@@ -1127,9 +1465,19 @@ class HomeCustomizationScreen extends StatelessWidget {
                   ),
                 ),
               const SizedBox(height: 16),
-              Text(
-                'Apps (${config.appButtons.length}/8)',
-                style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Apps ($enabledApps/8)',
+                      style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: enabledApps >= 8 ? null : () async => _showAddAppSheet(context, store),
+                    icon: const Icon(Icons.add_circle_outline),
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               for (final item in AppButtonId.values)
@@ -1149,6 +1497,26 @@ class HomeCustomizationScreen extends StatelessWidget {
                   ),
                   secondary: Icon(_appIcon(item)),
                 ),
+              for (final app in config.customApps)
+                SwitchListTile(
+                  value: app.enabled,
+                  onChanged: (enabled) async {
+                    final ok = await store.setCustomAppEnabled(app.packageName, enabled);
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Máximo de 8 apps na tela inicial.')),
+                      );
+                    }
+                  },
+                  title: Text(
+                    app.label,
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(app.packageName),
+                  secondary: _customAppSecondary(context, app),
+                ),
             ],
           );
         },
@@ -1159,7 +1527,7 @@ class HomeCustomizationScreen extends StatelessWidget {
 
 class _BigTile extends StatelessWidget {
   final String label;
-  final IconData icon;
+  final Widget icon;
   final VoidCallback onTap;
 
   const _BigTile({
@@ -1184,7 +1552,7 @@ class _BigTile extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(icon, size: 64, color: Colors.white),
+                  icon,
                   const SizedBox(height: 12),
                   Text(
                     label,
