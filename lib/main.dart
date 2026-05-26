@@ -7,9 +7,11 @@ import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:velhodozap/features/calls/calls.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1480,10 +1482,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   contacts: list,
                   onRetry: _loadDeviceContacts,
                   onCall: (phone) async {
-                    final digitsOrPlus = phone.replaceAll(RegExp(r'[^0-9+]'), '');
-                    if (digitsOrPlus.isEmpty) return;
-                    final url = Uri.parse('tel:$digitsOrPlus');
-                    await launchUrl(url, mode: LaunchMode.externalApplication);
+                    await Calls.showCallOptions(context, phoneRaw: phone);
                   },
                   onWhatsApp: (phone) => _openWhatsAppChat(phone),
                   onToggleStar: (c) => _toggleStar(c),
@@ -1567,7 +1566,7 @@ class _DeviceContactsList extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                _ContactAvatar(assetPath: null),
+                _ContactAvatar(assetPath: null, memoryBytes: c.thumbnail),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
@@ -1662,6 +1661,7 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
   late final TextEditingController _numberController;
   late bool _isStarred;
   bool _saving = false;
+  Uint8List? _photoBytes;
 
   @override
   void initState() {
@@ -1669,6 +1669,7 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
     _nameController = TextEditingController(text: widget.contact?.displayName ?? '');
     _numberController = TextEditingController(text: _initialNumber(widget.contact));
     _isStarred = widget.contact?.isStarred ?? true;
+    _photoBytes = widget.contact?.photoOrThumbnail;
   }
 
   String _initialNumber(fc.Contact? c) {
@@ -1700,19 +1701,55 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
         final c = fc.Contact()
           ..displayName = name
           ..isStarred = _isStarred
-          ..phones = [fc.Phone(phone)];
+          ..phones = [fc.Phone(phone)]
+          ..photo = _photoBytes;
         await c.insert();
       } else {
         final c = widget.contact!;
         c.displayName = name;
         c.isStarred = _isStarred;
         c.phones = [fc.Phone(phone)];
+        c.photo = _photoBytes;
         await c.update();
       }
       if (mounted) Navigator.of(context).pop(true);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<void> _pickFromGallery() async {
+    final status = await Permission.photos.request();
+    if (!status.isGranted) return;
+
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 80,
+      maxWidth: 1024,
+      maxHeight: 1024,
+    );
+    if (file == null) return;
+    final bytes = await file.readAsBytes();
+    if (!mounted) return;
+    setState(() => _photoBytes = bytes);
+  }
+
+  Future<void> _pickFromCamera() async {
+    final status = await Permission.camera.request();
+    if (!status.isGranted) return;
+
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: ImageSource.camera,
+      imageQuality: 80,
+      maxWidth: 1024,
+      maxHeight: 1024,
+    );
+    if (file == null) return;
+    final bytes = await file.readAsBytes();
+    if (!mounted) return;
+    setState(() => _photoBytes = bytes);
   }
 
   Future<void> _delete() async {
@@ -1762,6 +1799,64 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Center(
+              child: InkWell(
+                borderRadius: BorderRadius.circular(64),
+                onTap: () async {
+                  await showModalBottomSheet<void>(
+                    context: context,
+                    showDragHandle: true,
+                    builder: (context) {
+                      return SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              FilledButton.icon(
+                                onPressed: () async {
+                                  Navigator.of(context).pop();
+                                  await _pickFromGallery();
+                                },
+                                icon: const Icon(Icons.photo),
+                                label: const Text('Escolher da galeria'),
+                              ),
+                              const SizedBox(height: 10),
+                              FilledButton.tonalIcon(
+                                onPressed: () async {
+                                  Navigator.of(context).pop();
+                                  await _pickFromCamera();
+                                },
+                                icon: const Icon(Icons.photo_camera),
+                                label: const Text('Tirar foto'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white10,
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: SizedBox(
+                    width: 96,
+                    height: 96,
+                    child: ClipOval(
+                      child: _photoBytes == null
+                          ? const Center(child: Icon(Icons.person, size: 44, color: Colors.white70))
+                          : Image.memory(_photoBytes!, fit: BoxFit.cover),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller: _nameController,
               decoration: const InputDecoration(
@@ -1909,8 +2004,9 @@ class _ContactEditScreenState extends State<ContactEditScreen> {
 
 class _ContactAvatar extends StatelessWidget {
   final String? assetPath;
+  final Uint8List? memoryBytes;
 
-  const _ContactAvatar({this.assetPath});
+  const _ContactAvatar({this.assetPath, this.memoryBytes});
 
   @override
   Widget build(BuildContext context) {
@@ -1921,6 +2017,17 @@ class _ContactAvatar extends StatelessWidget {
         : ClipOval(
             child: Image.asset(
               assetPath!,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
+            ),
+          );
+    final memory = memoryBytes == null
+        ? null
+        : ClipOval(
+            child: Image.memory(
+              memoryBytes!,
               width: size,
               height: size,
               fit: BoxFit.cover,
@@ -1938,7 +2045,7 @@ class _ContactAvatar extends StatelessWidget {
         width: size,
         height: size,
         child: Center(
-          child: image ?? const Icon(Icons.person, size: 40, color: Colors.white70),
+          child: memory ?? image ?? const Icon(Icons.person, size: 40, color: Colors.white70),
         ),
       ),
     );
