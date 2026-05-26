@@ -85,6 +85,10 @@ final class CallFormats {
 final class Calls {
   static const _channel = MethodChannel('velhodozap/platform_intents');
 
+  static Future<void> openWhatsAppChat(BuildContext context, {required String phoneRaw}) async {
+    await _openWhatsAppChat(context, phoneRaw);
+  }
+
   static Future<void> showCallOptions(BuildContext context, {required String phoneRaw}) async {
     final phoneDigits = CallFormats.digitsOnly(phoneRaw);
     if (phoneDigits.isEmpty) return;
@@ -111,8 +115,15 @@ final class Calls {
                   ),
                   const SizedBox(height: 12),
                   _BigActionButton(
-                    icon: FontAwesomeIcons.whatsapp,
-                    label: 'WhatsApp Voz',
+                    leading: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        FaIcon(FontAwesomeIcons.whatsapp, size: 26),
+                        SizedBox(width: 10),
+                        Icon(Icons.phone, size: 26),
+                      ],
+                    ),
+                    label: 'Voz',
                     onPressed: () async {
                       Navigator.of(context).pop();
                       await _whatsAppVoice(context, phoneRaw);
@@ -120,8 +131,15 @@ final class Calls {
                   ),
                   const SizedBox(height: 10),
                   _BigActionButton(
-                    icon: FontAwesomeIcons.video,
-                    label: 'WhatsApp Vídeo',
+                    leading: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        FaIcon(FontAwesomeIcons.whatsapp, size: 26),
+                        SizedBox(width: 10),
+                        Icon(Icons.videocam, size: 26),
+                      ],
+                    ),
+                    label: 'Vídeo',
                     onPressed: () async {
                       Navigator.of(context).pop();
                       await _whatsAppVideo(context, phoneRaw);
@@ -129,8 +147,15 @@ final class Calls {
                   ),
                   const SizedBox(height: 10),
                   _BigActionButton(
-                    icon: Icons.phone,
-                    label: 'Telefone',
+                    leading: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.signal_cellular_alt, size: 26),
+                        SizedBox(width: 10),
+                        Icon(Icons.phone, size: 26),
+                      ],
+                    ),
+                    label: 'Vivo',
                     onPressed: () async {
                       Navigator.of(context).pop();
                       await _callPhoneDirect(phoneRaw);
@@ -236,20 +261,18 @@ final class Calls {
 }
 
 class _BigActionButton extends StatelessWidget {
-  final IconData icon;
+  final Widget leading;
   final String label;
   final VoidCallback onPressed;
 
   const _BigActionButton({
-    required this.icon,
+    required this.leading,
     required this.label,
     required this.onPressed,
   });
 
   @override
   Widget build(BuildContext context) {
-    final leading = Icon(icon, size: 28);
-
     return FilledButton(
       style: FilledButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),

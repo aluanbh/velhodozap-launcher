@@ -10,6 +10,7 @@ import android.provider.ContactsContract
 import android.provider.Settings
 import android.telephony.TelephonyManager
 import android.util.Log
+import android.net.wifi.WifiManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -58,6 +59,16 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
+                    "openSettingsAction" -> {
+                        val action = call.argument<String>("action") ?: Settings.ACTION_SETTINGS
+                        try {
+                            startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    }
+
                     "getBluetoothEnabled" -> {
                         result.success(getBluetoothEnabled())
                     }
@@ -68,6 +79,10 @@ class MainActivity : FlutterActivity() {
 
                     "getCellSignalInfo" -> {
                         result.success(getCellSignalInfo())
+                    }
+
+                    "getWifiInfo" -> {
+                        result.success(getWifiInfo())
                     }
 
                     "startWhatsAppCall" -> {
@@ -143,9 +158,30 @@ class MainActivity : FlutterActivity() {
                     null
                 }
 
+            val connectedName =
+                try {
+                    if (!enabled) {
+                        null
+                    } else {
+                        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
+                        val devices = mutableListOf<android.bluetooth.BluetoothDevice>()
+                        if (manager != null) {
+                            devices.addAll(manager.getConnectedDevices(android.bluetooth.BluetoothProfile.A2DP))
+                            devices.addAll(manager.getConnectedDevices(android.bluetooth.BluetoothProfile.HEADSET))
+                            devices.addAll(manager.getConnectedDevices(android.bluetooth.BluetoothProfile.GATT))
+                        }
+                        devices.firstOrNull()?.name
+                    }
+                } catch (e: SecurityException) {
+                    null
+                } catch (e: Exception) {
+                    null
+                }
+
             mapOf(
                 "enabled" to enabled,
                 "connected" to connected,
+                "connectedName" to connectedName,
             )
         } catch (e: SecurityException) {
             null
@@ -179,6 +215,35 @@ class MainActivity : FlutterActivity() {
                 "level" to level,
                 "dbm" to dbm,
                 "networkType" to netType,
+            )
+        } catch (e: SecurityException) {
+            null
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getWifiInfo(): Map<String, Any?>? {
+        return try {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager ?: return null
+            val enabled = wifi.isWifiEnabled
+            val info = wifi.connectionInfo
+            var connected = false
+            var ssid = ""
+            if (enabled && info != null) {
+                connected = info.networkId != -1
+                ssid = info.ssid ?: ""
+                if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length >= 2) {
+                    ssid = ssid.substring(1, ssid.length - 1)
+                }
+            }
+            if (ssid == "<unknown ssid>") {
+                ssid = ""
+            }
+            mapOf(
+                "enabled" to enabled,
+                "connected" to connected,
+                "ssid" to ssid,
             )
         } catch (e: SecurityException) {
             null

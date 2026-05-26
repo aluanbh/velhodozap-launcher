@@ -12,6 +12,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:velhodozap/features/calls/calls.dart';
+import 'package:velhodozap/features/contacts/contacts_screen.dart';
+import 'package:velhodozap/features/phone/dialer_screen.dart';
+import 'package:velhodozap/features/status/status_bar.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,6 +50,13 @@ final class PlatformIntents {
     await _channel.invokeMethod<void>('openVelhoDoZapSettings');
   }
 
+  static Future<bool> openSettingsAction(String action) async {
+    final ok = await _channel.invokeMethod<bool>('openSettingsAction', {
+      'action': action,
+    });
+    return ok ?? false;
+  }
+
   static Future<bool?> getBluetoothEnabled() async {
     return await _channel.invokeMethod<bool>('getBluetoothEnabled');
   }
@@ -58,12 +68,17 @@ final class PlatformIntents {
   static Future<Map<Object?, Object?>?> getCellSignalInfo() async {
     return await _channel.invokeMethod<Map<Object?, Object?>>('getCellSignalInfo');
   }
+
+  static Future<Map<Object?, Object?>?> getWifiInfo() async {
+    return await _channel.invokeMethod<Map<Object?, Object?>>('getWifiInfo');
+  }
 }
 
 enum AppThemeId {
   darkGreen,
   darkBlue,
   light,
+  white,
 }
 
 enum StatusItemId {
@@ -93,7 +108,7 @@ class HomeConfig {
 
   factory HomeConfig.defaults() {
     return const HomeConfig(
-      themeId: AppThemeId.darkGreen,
+      themeId: AppThemeId.white,
       statusItems: [
         StatusItemId.battery,
         StatusItemId.wifi,
@@ -133,7 +148,7 @@ class HomeConfig {
     final themeName = json['themeId'] as String?;
     final themeId = AppThemeId.values.firstWhere(
       (e) => e.name == themeName,
-      orElse: () => AppThemeId.darkGreen,
+      orElse: () => AppThemeId.white,
     );
 
     final statusNames = (json['statusItems'] as List?)?.whereType<String>().toList() ?? const <String>[];
@@ -456,10 +471,19 @@ ThemeData _buildTheme(HomeConfig config) {
     case AppThemeId.light:
       return ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0A7C4A),
+          seedColor: const Color(0xFF1E1E1E),
           brightness: Brightness.light,
         ),
-        scaffoldBackgroundColor: const Color(0xFFF6F6F6),
+        scaffoldBackgroundColor: const Color(0xFFF3F4F6),
+        useMaterial3: true,
+      );
+    case AppThemeId.white:
+      return ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF1E1E1E),
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: Colors.white,
         useMaterial3: true,
       );
   }
@@ -490,15 +514,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
   int? _batteryLevel;
   BatteryState? _batteryState;
-  String _networkLabel = 'Sem rede';
-  String _bluetoothLabel = 'BT: —';
-  String _cellLabel = 'Celular: —';
+  bool _mobileConnected = false;
+  String _wifiLabel = '—';
+  String _bluetoothLabel = '—';
+  String _cellLabel = '—';
+  Map<Object?, Object?>? _lastWifiInfo;
+  Map<Object?, Object?>? _lastBluetoothInfo;
+  Map<Object?, Object?>? _lastCellInfo;
 
   StreamSubscription<dynamic>? _batteryStateSub;
   StreamSubscription<dynamic>? _connectivitySub;
   Timer? _batteryTimer;
   Timer? _bluetoothTimer;
   Timer? _cellTimer;
+  Timer? _wifiTimer;
 
   @override
   void initState() {
@@ -507,6 +536,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _initBattery();
     _initConnectivity();
     _initBluetooth();
+    _initWifiInfo();
     _initCellSignal();
   }
 
@@ -515,6 +545,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await [
       Permission.phone,
       Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
     ].request();
   }
 
@@ -551,32 +582,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final isWifi = results.contains(ConnectivityResult.wifi);
       final isMobile = results.contains(ConnectivityResult.mobile);
-      final isEthernet = results.contains(ConnectivityResult.ethernet);
-      final isConnected = isWifi || isMobile || isEthernet;
 
       if (!mounted) return;
       setState(() {
-        if (!isConnected) {
-          _networkLabel = 'Sem rede';
-          return;
-        }
-
-        if (isWifi) {
-          _networkLabel = 'Wi‑Fi';
-          return;
-        }
-
-        if (isMobile) {
-          _networkLabel = 'Rede móvel';
-          return;
-        }
-
-        if (isEthernet) {
-          _networkLabel = 'Ethernet';
-          return;
-        }
-
-        _networkLabel = 'Conectado';
+        _mobileConnected = isMobile;
       });
     });
   }
@@ -586,26 +595,58 @@ class _HomeScreenState extends State<HomeScreen> {
       final info = await PlatformIntents.getBluetoothInfo();
       if (!mounted) return;
       setState(() {
+        _lastBluetoothInfo = info;
         if (info == null) {
-          _bluetoothLabel = 'BT: —';
+          _bluetoothLabel = '—';
           return;
         }
 
         final enabled = info['enabled'] as bool?;
         final connected = info['connected'] as bool?;
+        final connectedName = info['connectedName'] as String?;
         if (enabled == null) {
-          _bluetoothLabel = 'BT: —';
+          _bluetoothLabel = '—';
           return;
         }
         if (!enabled) {
-          _bluetoothLabel = 'BT: Desligado';
+          _bluetoothLabel = 'Off';
           return;
         }
         if (connected == true) {
-          _bluetoothLabel = 'BT: Conectado';
+          final name = _abbrev(connectedName ?? '', 12);
+          _bluetoothLabel = name.isEmpty ? 'On' : name;
           return;
         }
-        _bluetoothLabel = 'BT: Ligado';
+        _bluetoothLabel = 'On';
+      });
+    });
+  }
+
+  void _initWifiInfo() {
+    _wifiTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      final info = await PlatformIntents.getWifiInfo();
+      if (!mounted) return;
+      setState(() {
+        if (info == null) {
+          _lastWifiInfo = null;
+          _wifiLabel = '—';
+          return;
+        }
+        _lastWifiInfo = info;
+        final enabled = info?['enabled'] as bool?;
+        final connected = info?['connected'] as bool?;
+        final ssid = (info?['ssid'] as String?) ?? '';
+
+        if (enabled == false) {
+          _wifiLabel = 'Off';
+          return;
+        }
+        if (connected == true) {
+          final abbr = _abbrev(ssid, 12);
+          _wifiLabel = abbr.isEmpty ? 'On' : abbr;
+          return;
+        }
+        _wifiLabel = 'On';
       });
     });
   }
@@ -616,25 +657,31 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
 
       setState(() {
-        if (_networkLabel != 'Rede móvel') {
-          _cellLabel = 'Celular: Não';
-          return;
-        }
         if (info == null) {
-          _cellLabel = 'Celular: —';
+          _lastCellInfo = null;
+          _cellLabel = '—';
           return;
         }
 
+        _lastCellInfo = info;
         final level = info['level'] as int?;
-        final dbm = info['dbm'] as int?;
         final networkType = info['networkType'] as int?;
         final type = _mapNetworkTypeToLabel(networkType);
-        final bars = level == null ? '—' : '${level + 1}/5';
-        final dbmText = dbm == null ? '' : ' ${dbm}dBm';
-
-        _cellLabel = 'Celular: $type $bars$dbmText';
+        final bars = level == null ? '' : '${level + 1}/5';
+        final parts = <String>[];
+        if (type != '—') parts.add(type);
+        if (bars.isNotEmpty) parts.add(bars);
+        _cellLabel = parts.isEmpty ? '—' : parts.join(' ');
       });
     });
+  }
+
+  String _abbrev(String input, int max) {
+    final s = input.trim();
+    if (s.isEmpty) return '';
+    if (s.length <= max) return s;
+    final cut = max <= 1 ? 1 : max - 1;
+    return s.substring(0, cut) + '…';
   }
 
   String _mapNetworkTypeToLabel(int? type) {
@@ -668,6 +715,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _batteryTimer?.cancel();
     _bluetoothTimer?.cancel();
     _cellTimer?.cancel();
+    _wifiTimer?.cancel();
     super.dispose();
   }
 
@@ -765,20 +813,99 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  List<String> _buildStatusItems(HomeConfig config, String batteryText, String charging) {
-    final items = <String>[];
+  Future<void> _openStatusSettings(StatusIconId id) async {
+    final action = switch (id) {
+      StatusIconId.wifi => 'android.settings.WIFI_SETTINGS',
+      StatusIconId.bluetooth => 'android.settings.BLUETOOTH_SETTINGS',
+      StatusIconId.cellular => 'android.settings.WIRELESS_SETTINGS',
+      StatusIconId.battery => 'android.settings.BATTERY_SAVER_SETTINGS',
+    };
+    final ok = await PlatformIntents.openSettingsAction(action);
+    if (!ok) {
+      await PlatformIntents.openSystemSettings();
+    }
+  }
+
+  List<({StatusIconId id, String summary, List<String> details, int? batteryLevel, bool charging})> _buildStatusItems(
+    HomeConfig config,
+  ) {
+    final items = <({StatusIconId id, String summary, List<String> details, int? batteryLevel, bool charging})>[];
     final seen = <StatusItemId>{};
+    final charging = _batteryState == BatteryState.charging;
+    final batterySummary = _batteryLevel == null ? '—' : '${_batteryLevel}%';
+    final batteryStateLabel = switch (_batteryState) {
+      BatteryState.charging => 'Carregando',
+      BatteryState.discharging => 'Usando',
+      BatteryState.full => 'Cheia',
+      BatteryState.connectedNotCharging => 'Conectada',
+      BatteryState.unknown => '—',
+      null => '—',
+    };
+
+    final wifiEnabled = _lastWifiInfo?['enabled'] as bool?;
+    final wifiConnected = _lastWifiInfo?['connected'] as bool?;
+    final wifiSsid = (_lastWifiInfo?['ssid'] as String?) ?? '';
+
+    final btEnabled = _lastBluetoothInfo?['enabled'] as bool?;
+    final btConnected = _lastBluetoothInfo?['connected'] as bool?;
+    final btName = (_lastBluetoothInfo?['connectedName'] as String?) ?? '';
+
+    final cellLevel = _lastCellInfo?['level'] as int?;
+    final cellDbm = _lastCellInfo?['dbm'] as int?;
+    final cellNetworkType = _lastCellInfo?['networkType'] as int?;
+    final cellType = _mapNetworkTypeToLabel(cellNetworkType);
+
     for (final item in config.statusItems) {
       if (!seen.add(item)) continue;
       switch (item) {
         case StatusItemId.battery:
-          items.add('$batteryText$charging');
+          items.add((
+            id: StatusIconId.battery,
+            summary: batterySummary,
+            details: [
+              'Nível: $batterySummary',
+              'Estado: $batteryStateLabel',
+            ],
+            batteryLevel: _batteryLevel,
+            charging: charging,
+          ));
         case StatusItemId.wifi:
-          items.add('Wi‑Fi: ${_networkLabel == 'Wi‑Fi' ? 'Conectado' : 'Não'}');
+          items.add((
+            id: StatusIconId.wifi,
+            summary: _wifiLabel,
+            details: [
+              'Estado: ${wifiEnabled == null ? '—' : (wifiEnabled ? 'On' : 'Off')}',
+              'Conectado: ${wifiConnected == null ? '—' : (wifiConnected ? 'Sim' : 'Não')}',
+              'SSID: ${wifiSsid.isEmpty ? '—' : wifiSsid}',
+            ],
+            batteryLevel: null,
+            charging: false,
+          ));
         case StatusItemId.cellular:
-          items.add(_cellLabel);
+          items.add((
+            id: StatusIconId.cellular,
+            summary: _cellLabel,
+            details: [
+              'Conectado: ${_mobileConnected ? 'Sim' : 'Não'}',
+              'Tipo: ${cellType == '—' ? '—' : cellType}',
+              'Sinal: ${cellLevel == null ? '—' : '${cellLevel + 1}/5'}',
+              'dBm: ${cellDbm == null ? '—' : '${cellDbm}dBm'}',
+            ],
+            batteryLevel: null,
+            charging: false,
+          ));
         case StatusItemId.bluetooth:
-          items.add(_bluetoothLabel);
+          items.add((
+            id: StatusIconId.bluetooth,
+            summary: _bluetoothLabel,
+            details: [
+              'Estado: ${btEnabled == null ? '—' : (btEnabled ? 'On' : 'Off')}',
+              'Conectado: ${btConnected == null ? '—' : (btConnected ? 'Sim' : 'Não')}',
+              'Dispositivo: ${btName.trim().isEmpty ? '—' : btName}',
+            ],
+            batteryLevel: null,
+            charging: false,
+          ));
       }
     }
     return items.take(4).toList(growable: false);
@@ -813,9 +940,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final config = HomeConfigScope.of(context).config;
-    final batteryText = _batteryLevel == null ? 'Bateria: —' : 'Bateria: $_batteryLevel%';
-    final charging = _batteryState == BatteryState.charging ? ' (carregando)' : '';
-    final statusItems = _buildStatusItems(config, batteryText, charging);
+    final statusItems = _buildStatusItems(config);
     final appTiles = _buildAppTiles(config);
 
     return Scaffold(
@@ -826,8 +951,9 @@ class _HomeScreenState extends State<HomeScreen> {
               children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                  child: _BigStatusBar(
+                  child: StatusBar(
                     items: statusItems,
+                    onOpenSettings: _openStatusSettings,
                   ),
                 ),
                 Expanded(
@@ -899,7 +1025,8 @@ class HomeCustomizationScreen extends StatelessWidget {
 
   String _themeLabel(AppThemeId id) {
     return switch (id) {
-      AppThemeId.darkGreen => 'Verde (padrão)',
+      AppThemeId.white => 'Branco (padrão)',
+      AppThemeId.darkGreen => 'Verde escuro',
       AppThemeId.darkBlue => 'Azul',
       AppThemeId.light => 'Claro',
     };
@@ -1030,78 +1157,6 @@ class HomeCustomizationScreen extends StatelessWidget {
   }
 }
 
-class _BigStatusBar extends StatelessWidget {
-  final List<String> items;
-
-  const _BigStatusBar({required this.items});
-
-  Widget _cell(String text) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: Colors.white10,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          alignment: Alignment.centerLeft,
-          child: Text(
-            text,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
-            maxLines: 1,
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final display = items.take(4).toList(growable: false);
-    final row1 = display.isEmpty ? const ['—'] : display.take(2).toList(growable: false);
-    final row2 = display.length <= 2 ? const <String>[] : display.skip(2).take(2).toList(growable: false);
-
-    Widget buildRow(List<String> row) {
-      if (row.length == 1) {
-        return Row(
-          children: [
-            Expanded(child: _cell(row[0])),
-          ],
-        );
-      }
-
-      return Row(
-        children: [
-          Expanded(child: _cell(row[0])),
-          const SizedBox(width: 12),
-          Expanded(child: _cell(row[1])),
-        ],
-      );
-    }
-
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF111111),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          children: [
-            buildRow(row1),
-            if (row2.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              buildRow(row2.length == 1 ? [row2[0]] : row2),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _BigTile extends StatelessWidget {
   final String label;
   final IconData icon;
@@ -1134,7 +1189,7 @@ class _BigTile extends StatelessWidget {
                   Text(
                     label,
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+                    style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Colors.white),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1148,176 +1203,16 @@ class _BigTile extends StatelessWidget {
   }
 }
 
-class DialerScreen extends StatefulWidget {
-  const DialerScreen({super.key});
-
-  @override
-  State<DialerScreen> createState() => _DialerScreenState();
-}
-
-class _DialerScreenState extends State<DialerScreen> {
-  String _digits = '';
-
-  void _append(String d) {
-    setState(() => _digits = (_digits + d).replaceAll(RegExp(r'\D'), ''));
-  }
-
-  void _backspace() {
-    if (_digits.isEmpty) return;
-    setState(() => _digits = _digits.substring(0, _digits.length - 1));
-  }
-
-  void _clear() {
-    setState(() => _digits = '');
-  }
-
-  Future<void> _call() async {
-    if (_digits.isEmpty) return;
-    final url = Uri.parse('tel:$_digits');
-    await launchUrl(url, mode: LaunchMode.externalApplication);
-  }
-
-  void _openContacts() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => ContactsScreen(initialQuery: _digits)),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final display = _digits.isEmpty ? 'Digite o número' : _digits;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Telefone',
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
-        ),
-        actions: [
-          IconButton(
-            onPressed: _digits.isEmpty ? null : _clear,
-            icon: const Icon(Icons.clear),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF121212),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          display,
-                          style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: _digits.isEmpty ? null : _backspace,
-                        icon: const Icon(Icons.backspace_outlined),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    const spacing = 12.0;
-                    final width = constraints.maxWidth;
-                    final height = constraints.maxHeight;
-                    final cols = 3;
-                    final rows = 4;
-                    final cellW = (width - (cols - 1) * spacing) / cols;
-                    final cellH = (height - (rows - 1) * spacing) / rows;
-                    final fontSize = (cellH * 0.32).clamp(22.0, 40.0);
-
-                    Widget key(String label, VoidCallback onTap) {
-                      return Material(
-                        color: const Color(0xFF121212),
-                        borderRadius: BorderRadius.circular(20),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(20),
-                          onTap: onTap,
-                          child: Center(
-                            child: Text(
-                              label,
-                              style: TextStyle(fontSize: fontSize, fontWeight: FontWeight.w900),
-                            ),
-                          ),
-                        ),
-                      );
-                    }
-
-                    final keys = <Widget>[
-                      key('1', () => _append('1')),
-                      key('2', () => _append('2')),
-                      key('3', () => _append('3')),
-                      key('4', () => _append('4')),
-                      key('5', () => _append('5')),
-                      key('6', () => _append('6')),
-                      key('7', () => _append('7')),
-                      key('8', () => _append('8')),
-                      key('9', () => _append('9')),
-                      key('Contatos', _openContacts),
-                      key('0', () => _append('0')),
-                      key('Ligar', _call),
-                    ];
-
-                    int indexFor(int row, int col) => row * cols + col;
-
-                    return Column(
-                      children: [
-                        for (var r = 0; r < rows; r++) ...[
-                          if (r > 0) const SizedBox(height: spacing),
-                          Row(
-                            children: [
-                              for (var c = 0; c < cols; c++) ...[
-                                if (c > 0) const SizedBox(width: spacing),
-                                SizedBox(
-                                  width: cellW,
-                                  height: cellH,
-                                  child: keys[indexFor(r, c)],
-                                ),
-                              ],
-                            ],
-                          ),
-                        ],
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class ContactsScreen extends StatefulWidget {
+class LegacyContactsScreen extends StatefulWidget {
   final String initialQuery;
 
-  const ContactsScreen({this.initialQuery = '', super.key});
+  const LegacyContactsScreen({this.initialQuery = '', super.key});
 
   @override
-  State<ContactsScreen> createState() => _ContactsScreenState();
+  State<LegacyContactsScreen> createState() => _LegacyContactsScreenState();
 }
 
-class _ContactsScreenState extends State<ContactsScreen> {
+class _LegacyContactsScreenState extends State<LegacyContactsScreen> {
   late final TextEditingController _searchController;
   bool _showDeviceContacts = false;
   bool _loadingDeviceContacts = false;
@@ -1368,7 +1263,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
-    final list = await fc.FlutterContacts.getContacts(withProperties: true, withPhoto: false);
+    final list = await fc.FlutterContacts.getContacts(withProperties: true, withPhoto: true);
     if (!mounted) return;
     setState(() {
       _deviceContacts = list;
@@ -1403,7 +1298,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   Future<void> _openDeviceEditor({fc.Contact? contact}) async {
     final saved = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (_) => DeviceContactEditScreen(contact: contact)),
+      MaterialPageRoute(builder: (_) => LegacyDeviceContactEditScreen(contact: contact)),
     );
     if (saved == true) {
       await _loadDeviceContacts();
@@ -1420,6 +1315,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   Future<void> _toggleStar(fc.Contact contact) async {
+    final allowed = await fc.FlutterContacts.requestPermission(readonly: false);
+    if (!allowed) return;
     final full = await _getContactForUpdate(contact.id);
     if (full == null) return;
     full.isStarred = !contact.isStarred;
@@ -1566,7 +1463,7 @@ class _DeviceContactsList extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                _ContactAvatar(assetPath: null, memoryBytes: c.thumbnail),
+                _ContactAvatar(assetPath: null, memoryBytes: c.photoOrThumbnail),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
@@ -1647,16 +1544,16 @@ class _DeviceContactsList extends StatelessWidget {
   }
 }
 
-class DeviceContactEditScreen extends StatefulWidget {
+class LegacyDeviceContactEditScreen extends StatefulWidget {
   final fc.Contact? contact;
 
-  const DeviceContactEditScreen({this.contact, super.key});
+  const LegacyDeviceContactEditScreen({this.contact, super.key});
 
   @override
-  State<DeviceContactEditScreen> createState() => _DeviceContactEditScreenState();
+  State<LegacyDeviceContactEditScreen> createState() => _LegacyDeviceContactEditScreenState();
 }
 
-class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
+class _LegacyDeviceContactEditScreenState extends State<LegacyDeviceContactEditScreen> {
   late final TextEditingController _nameController;
   late final TextEditingController _numberController;
   late bool _isStarred;
@@ -1688,11 +1585,35 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
     super.dispose();
   }
 
+  Future<bool> _ensureWriteContacts() async {
+    final allowed = await fc.FlutterContacts.requestPermission(readonly: false);
+    if (allowed) return true;
+    if (!mounted) return false;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Permissão necessária'),
+          content: const Text('Permita acesso a Contatos para salvar, editar ou apagar.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
+    return false;
+  }
+
   Future<void> _save() async {
     if (_saving) return;
     final name = _nameController.text.trim();
     final digits = _numberController.text.replaceAll(RegExp(r'\D'), '');
     if (name.isEmpty || digits.isEmpty) return;
+    final canWrite = await _ensureWriteContacts();
+    if (!canWrite) return;
 
     setState(() => _saving = true);
     try {
@@ -1755,6 +1676,8 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
   Future<void> _delete() async {
     final c = widget.contact;
     if (c == null) return;
+    final canWrite = await _ensureWriteContacts();
+    if (!canWrite) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) {
