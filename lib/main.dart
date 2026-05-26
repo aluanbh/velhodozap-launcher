@@ -280,12 +280,14 @@ class ContactEntry {
   final String id;
   final String name;
   final String nationalNumber;
+  final bool isFavorite;
   final String? photoAsset;
 
   const ContactEntry({
     required this.id,
     required this.name,
     required this.nationalNumber,
+    required this.isFavorite,
     this.photoAsset,
   });
 
@@ -294,12 +296,14 @@ class ContactEntry {
   ContactEntry copyWith({
     String? name,
     String? nationalNumber,
+    bool? isFavorite,
     String? photoAsset,
   }) {
     return ContactEntry(
       id: id,
       name: name ?? this.name,
       nationalNumber: nationalNumber ?? this.nationalNumber,
+      isFavorite: isFavorite ?? this.isFavorite,
       photoAsset: photoAsset ?? this.photoAsset,
     );
   }
@@ -309,6 +313,7 @@ class ContactEntry {
       'id': id,
       'name': name,
       'nationalNumber': nationalNumber,
+      'isFavorite': isFavorite,
       'photoAsset': photoAsset,
     };
   }
@@ -318,6 +323,7 @@ class ContactEntry {
       id: (json['id'] as String?) ?? '',
       name: (json['name'] as String?) ?? '',
       nationalNumber: (json['nationalNumber'] as String?) ?? '',
+      isFavorite: (json['isFavorite'] as bool?) ?? true,
       photoAsset: json['photoAsset'] as String?,
     );
   }
@@ -1177,7 +1183,7 @@ class _DialerScreenState extends State<DialerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final display = _digits.isEmpty ? '' : _digits;
+    final display = _digits.isEmpty ? 'Digite o número' : _digits;
 
     return Scaffold(
       appBar: AppBar(
@@ -1311,7 +1317,7 @@ class ContactsScreen extends StatefulWidget {
 
 class _ContactsScreenState extends State<ContactsScreen> {
   late final TextEditingController _searchController;
-  bool _showDeviceContacts = true;
+  bool _showDeviceContacts = false;
   bool _loadingDeviceContacts = false;
   bool _deviceContactsPermissionDenied = false;
   List<fc.Contact> _deviceContacts = const [];
@@ -1327,11 +1333,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
-  }
-
-  Future<void> _callPhone(String nationalNumber) async {
-    final url = Uri.parse('tel:$nationalNumber');
-    await launchUrl(url, mode: LaunchMode.externalApplication);
   }
 
   String _normalizeForWaMe(String input) {
@@ -1398,18 +1399,34 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
-  void _openEdit({ContactEntry? entry}) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ContactEditScreen(entry: entry),
-      ),
+  Future<void> _openDeviceEditor({fc.Contact? contact}) async {
+    final saved = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => DeviceContactEditScreen(contact: contact)),
     );
+    if (saved == true) {
+      await _loadDeviceContacts();
+    }
+  }
+
+  Future<fc.Contact?> _getContactForUpdate(String id) async {
+    return await fc.FlutterContacts.getContact(
+      id,
+      withProperties: true,
+      withAccounts: true,
+      withPhoto: true,
+    );
+  }
+
+  Future<void> _toggleStar(fc.Contact contact) async {
+    final full = await _getContactForUpdate(contact.id);
+    if (full == null) return;
+    full.isStarred = !contact.isStarred;
+    await full.update();
+    await _loadDeviceContacts();
   }
 
   @override
   Widget build(BuildContext context) {
-    final store = ContactsScope.of(context);
-
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -1418,19 +1435,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _openEdit(),
+        onPressed: () => _openDeviceEditor(),
         child: const Icon(Icons.add),
       ),
-      body: AnimatedBuilder(
-        animation: store,
-        builder: (context, _) {
+      body: Builder(
+        builder: (context) {
           final q = _searchController.text.trim().toLowerCase();
-          final myList = store.contacts.where((c) {
-            if (q.isEmpty) return true;
-            return c.name.toLowerCase().contains(q) || c.nationalNumber.contains(q);
-          }).toList(growable: false);
-
-          final deviceList = _deviceContacts.where((c) {
+          final all = _deviceContacts.where((c) {
             if (q.isEmpty) return true;
             final name = c.displayName.toLowerCase();
             if (name.contains(q)) return true;
@@ -1438,6 +1449,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
             final digits = phone.replaceAll(RegExp(r'\D'), '');
             return digits.contains(q.replaceAll(RegExp(r'\D'), ''));
           }).toList(growable: false);
+          final favs = all.where((c) => c.isStarred).toList(growable: false);
+          final list = _showDeviceContacts ? all : favs;
 
           return Column(
             children: [
@@ -1461,104 +1474,25 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 child: _contactsModeChips(),
               ),
               Expanded(
-                child: _showDeviceContacts
-                    ? _DeviceContactsList(
-                        loading: _loadingDeviceContacts,
-                        permissionDenied: _deviceContactsPermissionDenied,
-                        contacts: deviceList,
-                        onRetry: _loadDeviceContacts,
-                        onCall: (phone) async {
-                          final digitsOrPlus = phone.replaceAll(RegExp(r'[^0-9+]'), '');
-                          if (digitsOrPlus.isEmpty) return;
-                          final url = Uri.parse('tel:$digitsOrPlus');
-                          await launchUrl(url, mode: LaunchMode.externalApplication);
-                        },
-                        onWhatsApp: (phone) => _openWhatsAppChat(phone),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        itemBuilder: (context, index) {
-                          final c = myList[index];
-                          return DecoratedBox(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF121212),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: Colors.white12),
-                            ),
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Row(
-                                children: [
-                                  _ContactAvatar(assetPath: c.photoAsset),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                c.name,
-                                                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                            IconButton(
-                                              onPressed: () => _openEdit(entry: c),
-                                              icon: const Icon(Icons.edit),
-                                            ),
-                                            IconButton(
-                                              onPressed: () async {
-                                                await store.deleteById(c.id);
-                                              },
-                                              icon: const Icon(Icons.delete_outline),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Text(
-                                          '+55 ${c.nationalNumber}',
-                                          style: const TextStyle(fontSize: 18, color: Colors.white70),
-                                        ),
-                                        const SizedBox(height: 12),
-                                        Row(
-                                          children: [
-                                            Expanded(
-                                              child: FilledButton.icon(
-                                                onPressed: () => _callPhone(c.nationalNumber),
-                                                icon: const Icon(Icons.phone),
-                                                label: const Text(
-                                                  'Ligar',
-                                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 10),
-                                            Expanded(
-                                              child: FilledButton.tonalIcon(
-                                                onPressed: () => _openWhatsAppChat(c.nationalNumber),
-                                                icon: const FaIcon(FontAwesomeIcons.whatsapp),
-                                                label: const Text(
-                                                  'WhatsApp',
-                                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                        separatorBuilder: (context, index) => const SizedBox(height: 14),
-                        itemCount: myList.length,
-                      ),
+                child: _DeviceContactsList(
+                  loading: _loadingDeviceContacts,
+                  permissionDenied: _deviceContactsPermissionDenied,
+                  contacts: list,
+                  onRetry: _loadDeviceContacts,
+                  onCall: (phone) async {
+                    final digitsOrPlus = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+                    if (digitsOrPlus.isEmpty) return;
+                    final url = Uri.parse('tel:$digitsOrPlus');
+                    await launchUrl(url, mode: LaunchMode.externalApplication);
+                  },
+                  onWhatsApp: (phone) => _openWhatsAppChat(phone),
+                  onToggleStar: (c) => _toggleStar(c),
+                  onEdit: (c) async {
+                    final full = await _getContactForUpdate(c.id);
+                    if (!mounted || full == null) return;
+                    await _openDeviceEditor(contact: full);
+                  },
+                ),
               ),
             ],
           );
@@ -1575,6 +1509,8 @@ class _DeviceContactsList extends StatelessWidget {
   final VoidCallback onRetry;
   final Future<void> Function(String phone) onCall;
   final Future<void> Function(String phone) onWhatsApp;
+  final Future<void> Function(fc.Contact contact)? onToggleStar;
+  final Future<void> Function(fc.Contact contact)? onEdit;
 
   const _DeviceContactsList({
     required this.loading,
@@ -1583,6 +1519,8 @@ class _DeviceContactsList extends StatelessWidget {
     required this.onRetry,
     required this.onCall,
     required this.onWhatsApp,
+    this.onToggleStar,
+    this.onEdit,
   });
 
   @override
@@ -1629,17 +1567,31 @@ class _DeviceContactsList extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                const _ContactAvatar(),
+                _ContactAvatar(assetPath: null),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        c.displayName,
-                        style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              c.displayName,
+                              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: onToggleStar == null ? null : () => onToggleStar!(c),
+                            icon: Icon(c.isStarred ? Icons.star : Icons.star_border),
+                          ),
+                          IconButton(
+                            onPressed: onEdit == null ? null : () => onEdit!(c),
+                            icon: const Icon(Icons.edit),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 6),
                       Text(
@@ -1655,9 +1607,13 @@ class _DeviceContactsList extends StatelessWidget {
                             child: FilledButton.icon(
                               onPressed: phone.isEmpty ? null : () => onCall(phone),
                               icon: const Icon(Icons.phone),
-                              label: const Text(
-                                'Ligar',
-                                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                              label: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: const Text(
+                                  'Ligar',
+                                  maxLines: 1,
+                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                                ),
                               ),
                             ),
                           ),
@@ -1666,9 +1622,13 @@ class _DeviceContactsList extends StatelessWidget {
                             child: FilledButton.tonalIcon(
                               onPressed: phone.isEmpty ? null : () => onWhatsApp(phone),
                               icon: const FaIcon(FontAwesomeIcons.whatsapp),
-                              label: const Text(
-                                'WhatsApp',
-                                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                              label: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: const Text(
+                                  'WhatsApp',
+                                  maxLines: 1,
+                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                                ),
                               ),
                             ),
                           ),
@@ -1688,6 +1648,158 @@ class _DeviceContactsList extends StatelessWidget {
   }
 }
 
+class DeviceContactEditScreen extends StatefulWidget {
+  final fc.Contact? contact;
+
+  const DeviceContactEditScreen({this.contact, super.key});
+
+  @override
+  State<DeviceContactEditScreen> createState() => _DeviceContactEditScreenState();
+}
+
+class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _numberController;
+  late bool _isStarred;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.contact?.displayName ?? '');
+    _numberController = TextEditingController(text: _initialNumber(widget.contact));
+    _isStarred = widget.contact?.isStarred ?? true;
+  }
+
+  String _initialNumber(fc.Contact? c) {
+    if (c == null) return '';
+    if (c.phones.isEmpty) return '';
+    final raw = c.phones.first.number;
+    final digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.startsWith('55') && digits.length > 2) return digits.substring(2);
+    return digits;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _numberController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_saving) return;
+    final name = _nameController.text.trim();
+    final digits = _numberController.text.replaceAll(RegExp(r'\D'), '');
+    if (name.isEmpty || digits.isEmpty) return;
+
+    setState(() => _saving = true);
+    try {
+      final phone = '+55$digits';
+      if (widget.contact == null) {
+        final c = fc.Contact()
+          ..displayName = name
+          ..isStarred = _isStarred
+          ..phones = [fc.Phone(phone)];
+        await c.insert();
+      } else {
+        final c = widget.contact!;
+        c.displayName = name;
+        c.isStarred = _isStarred;
+        c.phones = [fc.Phone(phone)];
+        await c.update();
+      }
+      if (mounted) Navigator.of(context).pop(true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _delete() async {
+    final c = widget.contact;
+    if (c == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Apagar contato?'),
+          content: const Text('Esse contato será removido do telefone.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Apagar')),
+          ],
+        );
+      },
+    );
+    if (ok != true) return;
+    await c.delete();
+    if (mounted) Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEditing = widget.contact != null;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          isEditing ? 'Editar contato' : 'Adicionar contato',
+          style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+        ),
+        actions: [
+          IconButton(
+            onPressed: () => setState(() => _isStarred = !_isStarred),
+            icon: Icon(_isStarred ? Icons.star : Icons.star_border),
+          ),
+          if (isEditing)
+            IconButton(
+              onPressed: _saving ? null : _delete,
+              icon: const Icon(Icons.delete_outline),
+            ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                filled: true,
+                border: OutlineInputBorder(),
+                labelText: 'Nome',
+              ),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _numberController,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(
+                filled: true,
+                border: OutlineInputBorder(),
+                labelText: 'Número (sem 55)',
+                prefixText: '+55 ',
+              ),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _saving ? null : _save,
+              icon: const Icon(Icons.save),
+              label: const Text(
+                'Salvar',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class ContactEditScreen extends StatefulWidget {
   final ContactEntry? entry;
 
@@ -1700,12 +1812,14 @@ class ContactEditScreen extends StatefulWidget {
 class _ContactEditScreenState extends State<ContactEditScreen> {
   late final TextEditingController _nameController;
   late final TextEditingController _numberController;
+  late bool _isFavorite;
 
   @override
   void initState() {
     super.initState();
     _nameController = TextEditingController(text: widget.entry?.name ?? '');
     _numberController = TextEditingController(text: widget.entry?.nationalNumber ?? '');
+    _isFavorite = widget.entry?.isFavorite ?? true;
   }
 
   @override
@@ -1726,6 +1840,7 @@ class _ContactEditScreenState extends State<ContactEditScreen> {
       id: id,
       name: name,
       nationalNumber: digits,
+      isFavorite: _isFavorite,
       photoAsset: widget.entry?.photoAsset,
     );
     await store.addOrUpdate(entry);
@@ -1742,6 +1857,12 @@ class _ContactEditScreenState extends State<ContactEditScreen> {
           isEditing ? 'Editar contato' : 'Adicionar contato',
           style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
         ),
+        actions: [
+          IconButton(
+            onPressed: () => setState(() => _isFavorite = !_isFavorite),
+            icon: Icon(_isFavorite ? Icons.star : Icons.star_border),
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
