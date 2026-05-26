@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -758,7 +759,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<String> _buildStatusItems(HomeConfig config, String batteryText, String charging) {
     final items = <String>[];
+    final seen = <StatusItemId>{};
     for (final item in config.statusItems) {
+      if (!seen.add(item)) continue;
       switch (item) {
         case StatusItemId.battery:
           items.add('$batteryText$charging');
@@ -1308,11 +1311,16 @@ class ContactsScreen extends StatefulWidget {
 
 class _ContactsScreenState extends State<ContactsScreen> {
   late final TextEditingController _searchController;
+  bool _showDeviceContacts = true;
+  bool _loadingDeviceContacts = false;
+  bool _deviceContactsPermissionDenied = false;
+  List<fc.Contact> _deviceContacts = const [];
 
   @override
   void initState() {
     super.initState();
     _searchController = TextEditingController(text: widget.initialQuery);
+    _loadDeviceContacts();
   }
 
   @override
@@ -1322,13 +1330,72 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   Future<void> _callPhone(String nationalNumber) async {
-    final url = Uri.parse('tel:+55$nationalNumber');
+    final url = Uri.parse('tel:$nationalNumber');
     await launchUrl(url, mode: LaunchMode.externalApplication);
   }
 
+  String _normalizeForWaMe(String input) {
+    final digits = input.replaceAll(RegExp(r'\D'), '');
+    if (digits.isEmpty) return digits;
+    if (digits.startsWith('55')) return digits;
+    if (digits.length == 11 || digits.length == 10) return '55$digits';
+    return digits;
+  }
+
   Future<void> _openWhatsAppChat(String nationalNumber) async {
-    final url = Uri.parse('https://wa.me/55$nationalNumber');
+    final number = _normalizeForWaMe(nationalNumber);
+    final url = Uri.parse('https://wa.me/$number');
     await launchUrl(url, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _loadDeviceContacts() async {
+    if (_loadingDeviceContacts) return;
+    setState(() {
+      _loadingDeviceContacts = true;
+      _deviceContactsPermissionDenied = false;
+    });
+
+    final allowed = await fc.FlutterContacts.requestPermission(readonly: true);
+    if (!allowed) {
+      if (!mounted) return;
+      setState(() {
+        _loadingDeviceContacts = false;
+        _deviceContactsPermissionDenied = true;
+      });
+      return;
+    }
+
+    final list = await fc.FlutterContacts.getContacts(withProperties: true, withPhoto: false);
+    if (!mounted) return;
+    setState(() {
+      _deviceContacts = list;
+      _loadingDeviceContacts = false;
+    });
+  }
+
+  Widget _contactsModeChips() {
+    return Row(
+      children: [
+        Expanded(
+          child: ChoiceChip(
+            label: const Text('Celular'),
+            selected: _showDeviceContacts,
+            onSelected: (v) {
+              setState(() => _showDeviceContacts = true);
+              _loadDeviceContacts();
+            },
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: ChoiceChip(
+            label: const Text('Meus'),
+            selected: !_showDeviceContacts,
+            onSelected: (v) => setState(() => _showDeviceContacts = false),
+          ),
+        ),
+      ],
+    );
   }
 
   void _openEdit({ContactEntry? entry}) {
@@ -1358,9 +1425,18 @@ class _ContactsScreenState extends State<ContactsScreen> {
         animation: store,
         builder: (context, _) {
           final q = _searchController.text.trim().toLowerCase();
-          final list = store.contacts.where((c) {
+          final myList = store.contacts.where((c) {
             if (q.isEmpty) return true;
             return c.name.toLowerCase().contains(q) || c.nationalNumber.contains(q);
+          }).toList(growable: false);
+
+          final deviceList = _deviceContacts.where((c) {
+            if (q.isEmpty) return true;
+            final name = c.displayName.toLowerCase();
+            if (name.contains(q)) return true;
+            final phone = c.phones.isEmpty ? '' : c.phones.first.number;
+            final digits = phone.replaceAll(RegExp(r'\D'), '');
+            return digits.contains(q.replaceAll(RegExp(r'\D'), ''));
           }).toList(growable: false);
 
           return Column(
@@ -1380,96 +1456,234 @@ class _ContactsScreenState extends State<ContactsScreen> {
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                 ),
               ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: _contactsModeChips(),
+              ),
               Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                  itemBuilder: (context, index) {
-                    final c = list[index];
-                    return DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF121212),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: Colors.white12),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Row(
-                          children: [
-                            _ContactAvatar(assetPath: c.photoAsset),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                child: _showDeviceContacts
+                    ? _DeviceContactsList(
+                        loading: _loadingDeviceContacts,
+                        permissionDenied: _deviceContactsPermissionDenied,
+                        contacts: deviceList,
+                        onRetry: _loadDeviceContacts,
+                        onCall: (phone) async {
+                          final digitsOrPlus = phone.replaceAll(RegExp(r'[^0-9+]'), '');
+                          if (digitsOrPlus.isEmpty) return;
+                          final url = Uri.parse('tel:$digitsOrPlus');
+                          await launchUrl(url, mode: LaunchMode.externalApplication);
+                        },
+                        onWhatsApp: (phone) => _openWhatsAppChat(phone),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        itemBuilder: (context, index) {
+                          final c = myList[index];
+                          return DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF121212),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.white12),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
                                 children: [
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          c.name,
-                                          style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
+                                  _ContactAvatar(assetPath: c.photoAsset),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                c.name,
+                                                style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              onPressed: () => _openEdit(entry: c),
+                                              icon: const Icon(Icons.edit),
+                                            ),
+                                            IconButton(
+                                              onPressed: () async {
+                                                await store.deleteById(c.id);
+                                              },
+                                              icon: const Icon(Icons.delete_outline),
+                                            ),
+                                          ],
                                         ),
-                                      ),
-                                      IconButton(
-                                        onPressed: () => _openEdit(entry: c),
-                                        icon: const Icon(Icons.edit),
-                                      ),
-                                      IconButton(
-                                        onPressed: () async {
-                                          await store.deleteById(c.id);
-                                        },
-                                        icon: const Icon(Icons.delete_outline),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    '+55 ${c.nationalNumber}',
-                                    style: const TextStyle(fontSize: 18, color: Colors.white70),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: FilledButton.icon(
-                                          onPressed: () => _callPhone(c.nationalNumber),
-                                          icon: const Icon(Icons.phone),
-                                          label: const Text(
-                                            'Ligar',
-                                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-                                          ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          '+55 ${c.nationalNumber}',
+                                          style: const TextStyle(fontSize: 18, color: Colors.white70),
                                         ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: FilledButton.tonalIcon(
-                                          onPressed: () => _openWhatsAppChat(c.nationalNumber),
-                                          icon: const FaIcon(FontAwesomeIcons.whatsapp),
-                                          label: const Text(
-                                            'WhatsApp',
-                                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-                                          ),
+                                        const SizedBox(height: 12),
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: FilledButton.icon(
+                                                onPressed: () => _callPhone(c.nationalNumber),
+                                                icon: const Icon(Icons.phone),
+                                                label: const Text(
+                                                  'Ligar',
+                                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            Expanded(
+                                              child: FilledButton.tonalIcon(
+                                                onPressed: () => _openWhatsAppChat(c.nationalNumber),
+                                                icon: const FaIcon(FontAwesomeIcons.whatsapp),
+                                                label: const Text(
+                                                  'WhatsApp',
+                                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),
                             ),
-                          ],
-                        ),
+                          );
+                        },
+                        separatorBuilder: (context, index) => const SizedBox(height: 14),
+                        itemCount: myList.length,
                       ),
-                    );
-                  },
-                  separatorBuilder: (context, index) => const SizedBox(height: 14),
-                  itemCount: list.length,
-                ),
               ),
             ],
           );
         },
       ),
+    );
+  }
+}
+
+class _DeviceContactsList extends StatelessWidget {
+  final bool loading;
+  final bool permissionDenied;
+  final List<fc.Contact> contacts;
+  final VoidCallback onRetry;
+  final Future<void> Function(String phone) onCall;
+  final Future<void> Function(String phone) onWhatsApp;
+
+  const _DeviceContactsList({
+    required this.loading,
+    required this.permissionDenied,
+    required this.contacts,
+    required this.onRetry,
+    required this.onCall,
+    required this.onWhatsApp,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (permissionDenied) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Permissão de contatos negada.',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              FilledButton(
+                onPressed: onRetry,
+                child: const Text('Tentar novamente'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      itemBuilder: (context, index) {
+        final c = contacts[index];
+        final phone = c.phones.isEmpty ? '' : c.phones.first.number;
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xFF121212),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                const _ContactAvatar(),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        c.displayName,
+                        style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        phone.isEmpty ? 'Sem telefone' : phone,
+                        style: const TextStyle(fontSize: 18, color: Colors.white70),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed: phone.isEmpty ? null : () => onCall(phone),
+                              icon: const Icon(Icons.phone),
+                              label: const Text(
+                                'Ligar',
+                                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: phone.isEmpty ? null : () => onWhatsApp(phone),
+                              icon: const FaIcon(FontAwesomeIcons.whatsapp),
+                              label: const Text(
+                                'WhatsApp',
+                                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+      separatorBuilder: (context, index) => const SizedBox(height: 14),
+      itemCount: contacts.length,
     );
   }
 }
