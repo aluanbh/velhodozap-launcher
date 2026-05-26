@@ -206,6 +206,7 @@ class HomeConfig {
 
   Map<String, dynamic> toJson() {
     return {
+      'configVersion': 2,
       'themeId': themeId.name,
       'statusItems': statusItems.map((e) => e.name).toList(growable: false),
       'appButtons': appButtons.map((e) => e.name).toList(growable: false),
@@ -214,6 +215,7 @@ class HomeConfig {
   }
 
   factory HomeConfig.fromJson(Map<String, dynamic> json) {
+    final configVersion = (json['configVersion'] as num?)?.toInt() ?? 1;
     final themeName = json['themeId'] as String?;
     final themeId = switch (themeName) {
       'darkGreen' => AppThemeId.darkGreen,
@@ -300,7 +302,7 @@ class HomeConfig {
     final finalBuiltIn = sanitizedApps.isEmpty ? const [AppButtonId.phone] : sanitizedApps;
     final finalEnabledCount = finalBuiltIn.length + cappedCustomApps.where((e) => e.enabled).length;
     final finalApps = finalEnabledCount == 0 ? const [AppButtonId.phone] : finalBuiltIn;
-    if (!finalApps.contains(AppButtonId.playStore) && totalEnabled < 8) {
+    if (configVersion < 2 && !finalApps.contains(AppButtonId.playStore) && totalEnabled < 8) {
       totalEnabled++;
       finalApps.add(AppButtonId.playStore);
     }

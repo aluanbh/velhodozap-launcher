@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:velhodozap/features/contacts/contacts_screen.dart';
 
@@ -27,6 +29,19 @@ class _DialerScreenState extends State<DialerScreen> {
 
   Future<void> _call() async {
     if (_digits.isEmpty) return;
+    final perm = await Permission.phone.request();
+    if (!perm.isGranted) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permita chamadas para ligar direto.')),
+      );
+      final url = Uri.parse('tel:$_digits');
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+      return;
+    }
+
+    final ok = await FlutterPhoneDirectCaller.callNumber(_digits);
+    if (ok == true) return;
     final url = Uri.parse('tel:$_digits');
     await launchUrl(url, mode: LaunchMode.externalApplication);
   }
