@@ -316,6 +316,7 @@ class HomeConfig {
 
 class HomeConfigStore extends ChangeNotifier {
   static const _prefsKey = 'home_config_v1';
+  static const _prefsKeyBackup = 'home_config_v1_bak';
 
   final SharedPreferences _prefs;
   HomeConfig _config = HomeConfig.defaults();
@@ -325,18 +326,44 @@ class HomeConfigStore extends ChangeNotifier {
   HomeConfig get config => _config;
 
   Future<void> load() async {
+    HomeConfig? parse(String raw) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is! Map<String, dynamic>) return null;
+        return HomeConfig.fromJson(decoded);
+      } catch (_) {
+        return null;
+      }
+    }
+
     final raw = _prefs.getString(_prefsKey);
-    if (raw == null || raw.isEmpty) return;
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic>) return;
-      _config = HomeConfig.fromJson(decoded);
-    } catch (_) {}
+    if (raw != null && raw.isNotEmpty) {
+      final parsed = parse(raw);
+      if (parsed != null) {
+        _config = parsed;
+        return;
+      }
+    }
+
+    final bak = _prefs.getString(_prefsKeyBackup);
+    if (bak != null && bak.isNotEmpty) {
+      final parsed = parse(bak);
+      if (parsed != null) {
+        _config = parsed;
+        await _save(rotateBackup: false);
+      }
+    }
   }
 
-  Future<void> _save() async {
-    final raw = jsonEncode(_config.toJson());
-    await _prefs.setString(_prefsKey, raw);
+  Future<void> _save({bool rotateBackup = true}) async {
+    final rawNew = jsonEncode(_config.toJson());
+    if (rotateBackup) {
+      final prev = _prefs.getString(_prefsKey);
+      if (prev != null && prev.isNotEmpty) {
+        await _prefs.setString(_prefsKeyBackup, prev);
+      }
+    }
+    await _prefs.setString(_prefsKey, rawNew);
   }
 
   Future<void> setTheme(AppThemeId themeId) async {
@@ -553,6 +580,7 @@ class ContactEntry {
 
 class ContactsStore extends ChangeNotifier {
   static const _prefsKey = 'contacts_v1';
+  static const _prefsKeyBackup = 'contacts_v1_bak';
 
   final SharedPreferences _prefs;
   List<ContactEntry> _contacts = const [];
@@ -562,24 +590,50 @@ class ContactsStore extends ChangeNotifier {
   List<ContactEntry> get contacts => _contacts;
 
   Future<void> load() async {
-    final raw = _prefs.getString(_prefsKey);
-    if (raw == null || raw.isEmpty) {
-      _contacts = const [];
-      return;
+    List<ContactEntry>? parse(String raw) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is! List) return null;
+        return decoded
+            .whereType<Map>()
+            .map((e) => ContactEntry.fromJson(e.cast<String, dynamic>()))
+            .where((c) => c.id.isNotEmpty && c.name.trim().isNotEmpty && c.nationalNumber.trim().isNotEmpty)
+            .toList(growable: false);
+      } catch (_) {
+        return null;
+      }
     }
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! List) return;
-      _contacts = decoded
-          .whereType<Map>()
-          .map((e) => ContactEntry.fromJson(e.cast<String, dynamic>()))
-          .where((c) => c.id.isNotEmpty && c.name.trim().isNotEmpty && c.nationalNumber.trim().isNotEmpty)
-          .toList(growable: false);
-    } catch (_) {}
+
+    final raw = _prefs.getString(_prefsKey);
+    if (raw != null && raw.isNotEmpty) {
+      final parsed = parse(raw);
+      if (parsed != null) {
+        _contacts = parsed;
+        return;
+      }
+    }
+
+    final bak = _prefs.getString(_prefsKeyBackup);
+    if (bak != null && bak.isNotEmpty) {
+      final parsed = parse(bak);
+      if (parsed != null) {
+        _contacts = parsed;
+        await _save(rotateBackup: false);
+        return;
+      }
+    }
+
+    _contacts = const [];
   }
 
-  Future<void> _save() async {
+  Future<void> _save({bool rotateBackup = true}) async {
     final raw = jsonEncode(_contacts.map((c) => c.toJson()).toList(growable: false));
+    if (rotateBackup) {
+      final prev = _prefs.getString(_prefsKey);
+      if (prev != null && prev.isNotEmpty) {
+        await _prefs.setString(_prefsKeyBackup, prev);
+      }
+    }
     await _prefs.setString(_prefsKey, raw);
   }
 
@@ -1650,8 +1704,9 @@ class HomeCustomizationScreen extends StatelessWidget {
           final config = store.config;
           final enabledApps = config.appButtons.length + config.customApps.where((e) => e.enabled).length;
 
+          final bottom = MediaQuery.of(context).padding.bottom;
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + bottom + 8),
             children: [
               const Text(
                 'Tema',
