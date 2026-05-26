@@ -8,6 +8,7 @@ import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
@@ -306,6 +307,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun drawableToBitmap(drawable: Drawable, sizePx: Int): Bitmap {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && drawable is AdaptiveIconDrawable) {
+            val fg = drawable.foreground
+            return drawableToBitmap(fg, sizePx)
+        }
         if (drawable is BitmapDrawable) {
             val b = drawable.bitmap
             if (b != null && b.width > 0 && b.height > 0) {

@@ -19,7 +19,7 @@ import 'package:velhodozap/features/status/status_bar.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: [SystemUiOverlay.bottom]);
   final prefs = await SharedPreferences.getInstance();
   final configStore = HomeConfigStore(prefs);
   await configStore.load();
@@ -94,7 +94,6 @@ enum AppThemeId {
   darkGreen,
   darkBlue,
   light,
-  white,
 }
 
 enum StatusItemId {
@@ -109,6 +108,7 @@ enum AppButtonId {
   contacts,
   whatsapp,
   youtube,
+  playStore,
 }
 
 class CustomAppConfig {
@@ -172,7 +172,7 @@ class HomeConfig {
 
   factory HomeConfig.defaults() {
     return const HomeConfig(
-      themeId: AppThemeId.white,
+      themeId: AppThemeId.darkGreen,
       statusItems: [
         StatusItemId.battery,
         StatusItemId.wifi,
@@ -184,6 +184,7 @@ class HomeConfig {
         AppButtonId.contacts,
         AppButtonId.whatsapp,
         AppButtonId.youtube,
+        AppButtonId.playStore,
       ],
       customApps: [],
     );
@@ -214,10 +215,13 @@ class HomeConfig {
 
   factory HomeConfig.fromJson(Map<String, dynamic> json) {
     final themeName = json['themeId'] as String?;
-    final themeId = AppThemeId.values.firstWhere(
-      (e) => e.name == themeName,
-      orElse: () => AppThemeId.white,
-    );
+    final themeId = switch (themeName) {
+      'darkGreen' => AppThemeId.darkGreen,
+      'darkBlue' => AppThemeId.darkBlue,
+      'light' => AppThemeId.light,
+      'white' => AppThemeId.darkGreen,
+      _ => AppThemeId.darkGreen,
+    };
 
     final statusNames = (json['statusItems'] as List?)?.whereType<String>().toList() ?? const <String>[];
     StatusItemId parseStatus(String name) {
@@ -256,6 +260,8 @@ class HomeConfig {
           return AppButtonId.whatsapp;
         case 'youtube':
           return AppButtonId.youtube;
+        case 'playStore':
+          return AppButtonId.playStore;
         default:
           return AppButtonId.phone;
       }
@@ -280,7 +286,7 @@ class HomeConfig {
     final sanitizedApps = appButtons.isEmpty ? const [AppButtonId.phone] : appButtons.take(8).toList();
 
     final enabledCustom = customApps.where((e) => e.enabled).length;
-    final totalEnabled = sanitizedApps.length + enabledCustom;
+    var totalEnabled = sanitizedApps.length + enabledCustom;
     final cappedCustomApps = customApps.toList(growable: true);
     if (totalEnabled > 8) {
       var overflow = totalEnabled - 8;
@@ -294,6 +300,10 @@ class HomeConfig {
     final finalBuiltIn = sanitizedApps.isEmpty ? const [AppButtonId.phone] : sanitizedApps;
     final finalEnabledCount = finalBuiltIn.length + cappedCustomApps.where((e) => e.enabled).length;
     final finalApps = finalEnabledCount == 0 ? const [AppButtonId.phone] : finalBuiltIn;
+    if (!finalApps.contains(AppButtonId.playStore) && totalEnabled < 8) {
+      totalEnabled++;
+      finalApps.add(AppButtonId.playStore);
+    }
 
     return HomeConfig(
       themeId: themeId,
@@ -433,6 +443,45 @@ class HomeConfigStore extends ChangeNotifier {
     await _save();
     notifyListeners();
     return true;
+  }
+
+  Future<void> removeCustomApp(String packageName) async {
+    final pkg = packageName.trim();
+    if (pkg.isEmpty) return;
+
+    final list = _config.customApps.where((e) => e.packageName != pkg).toList(growable: false);
+    if (list.length == _config.customApps.length) return;
+
+    final anyCustomEnabled = list.any((e) => e.enabled);
+    if (_config.appButtons.isEmpty && !anyCustomEnabled) {
+      _config = _config.copyWith(appButtons: const [AppButtonId.phone], customApps: list);
+      await _save();
+      notifyListeners();
+      return;
+    }
+
+    _config = _config.copyWith(customApps: list);
+    await _save();
+    notifyListeners();
+  }
+
+  Future<void> refreshCustomAppIcons() async {
+    if (_config.customApps.isEmpty) return;
+    final updated = _config.customApps.toList(growable: true);
+    var changed = false;
+    for (var i = 0; i < updated.length; i++) {
+      final app = updated[i];
+      final bytes = await PlatformIntents.getAppIconPng(packageName: app.packageName, size: 128);
+      if (bytes == null) continue;
+      final b64 = base64Encode(bytes);
+      if (b64 == app.iconPngBase64) continue;
+      updated[i] = app.copyWith(iconPngBase64: b64);
+      changed = true;
+    }
+    if (!changed) return;
+    _config = _config.copyWith(customApps: updated);
+    await _save();
+    notifyListeners();
   }
 }
 
@@ -631,15 +680,10 @@ ThemeData _buildTheme(HomeConfig config) {
           brightness: Brightness.light,
         ),
         scaffoldBackgroundColor: const Color(0xFFF3F4F6),
-        useMaterial3: true,
-      );
-    case AppThemeId.white:
-      return ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E1E1E),
-          brightness: Brightness.light,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFF3F4F6),
+          foregroundColor: Colors.black,
         ),
-        scaffoldBackgroundColor: Colors.white,
         useMaterial3: true,
       );
   }
@@ -684,6 +728,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _bluetoothTimer;
   Timer? _cellTimer;
   Timer? _wifiTimer;
+
+  static const _appVersion = '0.8.0';
+  static const _appBuild = '1';
 
   @override
   void initState() {
@@ -899,6 +946,18 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _openPlayStore() async {
+    final ok = await PlatformIntents.openApp(
+      packageName: 'com.android.vending',
+      relaunch: false,
+    );
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Play Store não instalada.')),
+      );
+    }
+  }
+
   void _openDialer() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const DialerScreen()),
@@ -943,6 +1002,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: const Icon(Icons.tune),
                   label: const Text('Personalizar tela inicial'),
                 ),
+                
                 const SizedBox(height: 10),
                 FilledButton.icon(
                   onPressed: () async {
@@ -961,9 +1021,54 @@ class _HomeScreenState extends State<HomeScreen> {
                   icon: const Icon(Icons.info_outline),
                   label: const Text('Configurações do app no Android'),
                 ),
+                const SizedBox(height: 10),
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    Navigator.of(context).pop();
+                    await _openAbout();
+                  },
+                  icon: const Icon(Icons.info_outline),
+                  label: const Text('Sobre'),
+                ),
               ],
             ),
           ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openAbout() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text(
+            'Velho do Zap',
+            style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
+          ),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Versão: $_appVersion+$_appBuild', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+              SizedBox(height: 12),
+              Text('Feito para meu sogro Tides', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              SizedBox(height: 8),
+              Text('por André Luan de Olivera', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              SizedBox(height: 8),
+              Text('aluanbh@me.com', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              SizedBox(height: 8),
+              Text('(38) 9 9940-8092', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Fechar'),
+            ),
+          ],
         );
       },
     );
@@ -1101,6 +1206,14 @@ class _HomeScreenState extends State<HomeScreen> {
               label: 'YouTube',
               icon: const Icon(FontAwesomeIcons.youtube, size: 64, color: Colors.white),
               onTap: _openYouTube,
+            ),
+          );
+        case AppButtonId.playStore:
+          tiles.add(
+            _BigTile(
+              label: 'Play Store',
+              icon: const Icon(Icons.store, size: 64, color: Colors.white),
+              onTap: _openPlayStore,
             ),
           );
       }
@@ -1246,8 +1359,7 @@ class HomeCustomizationScreen extends StatelessWidget {
 
   String _themeLabel(AppThemeId id) {
     return switch (id) {
-      AppThemeId.white => 'Branco (padrão)',
-      AppThemeId.darkGreen => 'Verde escuro',
+      AppThemeId.darkGreen => 'Verde escuro (padrão)',
       AppThemeId.darkBlue => 'Azul',
       AppThemeId.light => 'Claro',
     };
@@ -1268,6 +1380,7 @@ class HomeCustomizationScreen extends StatelessWidget {
       AppButtonId.contacts => 'Contatos',
       AppButtonId.whatsapp => 'WhatsApp',
       AppButtonId.youtube => 'YouTube',
+      AppButtonId.playStore => 'Play Store',
     };
   }
 
@@ -1277,6 +1390,7 @@ class HomeCustomizationScreen extends StatelessWidget {
       AppButtonId.contacts => Icons.person,
       AppButtonId.whatsapp => FontAwesomeIcons.whatsapp,
       AppButtonId.youtube => FontAwesomeIcons.youtube,
+      AppButtonId.playStore => Icons.store,
     };
   }
 
@@ -1297,6 +1411,129 @@ class HomeCustomizationScreen extends StatelessWidget {
     } catch (_) {
       return const Icon(Icons.apps);
     }
+  }
+
+  Future<void> _showCustomAppActions(BuildContext context, HomeConfigStore store, CustomAppConfig app) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  app.label,
+                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: () async {
+                    Navigator.of(context).pop();
+                    await store.setCustomAppEnabled(app.packageName, !app.enabled);
+                  },
+                  icon: Icon(app.enabled ? Icons.toggle_off : Icons.toggle_on),
+                  label: Text(app.enabled ? 'Desativar' : 'Ativar'),
+                ),
+                const SizedBox(height: 10),
+                FilledButton.tonalIcon(
+                  onPressed: () async {
+                    final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (context) {
+                        return AlertDialog(
+                          title: const Text('Remover app?'),
+                          content: Text('Remover "${app.label}" da tela inicial?'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(context).pop(false),
+                              child: const Text('Cancelar'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.of(context).pop(true),
+                              child: const Text('Remover'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (ok != true) return;
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop();
+                    await store.removeCustomApp(app.packageName);
+                  },
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Remover'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _customAppRow(BuildContext context, HomeConfigStore store, CustomAppConfig app) {
+    final icon = _customAppSecondary(context, app);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          SizedBox(width: 40, height: 40, child: Center(child: icon)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _HoldToAction2s(
+              holdDuration: const Duration(seconds: 2),
+              onTap: () async {
+                final ok = await store.setCustomAppEnabled(app.packageName, !app.enabled);
+                if (!ok && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Máximo de 8 apps na tela inicial.')),
+                  );
+                }
+              },
+              onHold: () async {
+                await _showCustomAppActions(context, store, app);
+              },
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    app.label,
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    app.packageName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Switch(
+            value: app.enabled,
+            onChanged: (enabled) async {
+              final ok = await store.setCustomAppEnabled(app.packageName, enabled);
+              if (!ok && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Máximo de 8 apps na tela inicial.')),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _showAddAppSheet(BuildContext context, HomeConfigStore store) async {
@@ -1497,30 +1734,68 @@ class HomeCustomizationScreen extends StatelessWidget {
                   ),
                   secondary: Icon(_appIcon(item)),
                 ),
-              for (final app in config.customApps)
-                SwitchListTile(
-                  value: app.enabled,
-                  onChanged: (enabled) async {
-                    final ok = await store.setCustomAppEnabled(app.packageName, enabled);
-                    if (!ok && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Máximo de 8 apps na tela inicial.')),
-                      );
-                    }
-                  },
-                  title: Text(
-                    app.label,
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(app.packageName),
-                  secondary: _customAppSecondary(context, app),
-                ),
+              for (final app in config.customApps) _customAppRow(context, store, app),
             ],
           );
         },
       ),
+    );
+  }
+}
+
+class _HoldToAction2s extends StatefulWidget {
+  final Duration holdDuration;
+  final Future<void> Function() onTap;
+  final Future<void> Function() onHold;
+  final Widget child;
+
+  const _HoldToAction2s({
+    required this.holdDuration,
+    required this.onTap,
+    required this.onHold,
+    required this.child,
+  });
+
+  @override
+  State<_HoldToAction2s> createState() => _HoldToAction2sState();
+}
+
+class _HoldToAction2sState extends State<_HoldToAction2s> {
+  Timer? _timer;
+  bool _held = false;
+
+  void _startHoldTimer() {
+    _timer?.cancel();
+    _held = false;
+    _timer = Timer(widget.holdDuration, () async {
+      _held = true;
+      await widget.onHold();
+    });
+  }
+
+  void _cancelHoldTimer() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  @override
+  void dispose() {
+    _cancelHoldTimer();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => _startHoldTimer(),
+      onTapCancel: _cancelHoldTimer,
+      onTapUp: (_) async {
+        _cancelHoldTimer();
+        if (_held) return;
+        await widget.onTap();
+      },
+      child: widget.child,
     );
   }
 }

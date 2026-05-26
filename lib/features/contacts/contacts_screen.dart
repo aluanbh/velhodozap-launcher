@@ -295,6 +295,9 @@ class DeviceContactsList extends StatelessWidget {
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       itemBuilder: (context, index) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final fg = isDark ? Colors.white : Colors.white;
+        final fgMuted = isDark ? Colors.white70 : Colors.white70;
         final c = contacts[index];
         final phone = c.phones.isEmpty ? '' : c.phones.first.number;
         return DecoratedBox(
@@ -318,25 +321,25 @@ class DeviceContactsList extends StatelessWidget {
                           Expanded(
                             child: Text(
                               c.displayName,
-                              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+                              style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: fg),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           IconButton(
                             onPressed: onToggleStar == null ? null : () => onToggleStar!(c),
-                            icon: Icon(c.isStarred ? Icons.star : Icons.star_border),
+                            icon: Icon(c.isStarred ? Icons.star : Icons.star_border, color: fg),
                           ),
                           IconButton(
                             onPressed: onEdit == null ? null : () => onEdit!(c),
-                            icon: const Icon(Icons.edit),
+                            icon: Icon(Icons.edit, color: fg),
                           ),
                         ],
                       ),
                       const SizedBox(height: 6),
                       Text(
                         phone.isEmpty ? 'Sem telefone' : phone,
-                        style: const TextStyle(fontSize: 18, color: Colors.white70),
+                        style: TextStyle(fontSize: 18, color: fgMuted),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -612,15 +615,23 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
                 child: DecoratedBox(
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: Colors.white10,
-                    border: Border.all(color: Colors.white12),
+                    color: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
+                    border: Border.all(
+                      color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black26,
+                    ),
                   ),
                   child: SizedBox(
                     width: 96,
                     height: 96,
                     child: ClipOval(
                       child: _photoBytes == null
-                          ? const Center(child: Icon(Icons.person, size: 44, color: Colors.white70))
+                          ? Center(
+                              child: Icon(
+                                Icons.person,
+                                size: 44,
+                                color: Theme.of(context).brightness == Brightness.dark ? Colors.white70 : Colors.black54,
+                              ),
+                            )
                           : Image.memory(_photoBytes!, fit: BoxFit.cover),
                     ),
                   ),
@@ -674,19 +685,26 @@ class ContactAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const size = 72.0;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return DecoratedBox(
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: Colors.white10,
-        border: Border.all(color: Colors.white12),
+        color: isDark ? Colors.white10 : Colors.black12,
+        border: Border.all(color: isDark ? Colors.white12 : Colors.black26),
       ),
       child: SizedBox(
         width: size,
         height: size,
         child: ClipOval(
           child: memoryBytes == null
-              ? const Center(child: Icon(Icons.person, size: 40, color: Colors.white70))
+              ? Center(
+                  child: Icon(
+                    Icons.person,
+                    size: 40,
+                    color: isDark ? Colors.white70 : Colors.black54,
+                  ),
+                )
               : Image.memory(memoryBytes!, width: size, height: size, fit: BoxFit.cover),
         ),
       ),

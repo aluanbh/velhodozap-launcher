@@ -21,10 +21,11 @@
 
         <package android:name="com.whatsapp" />
         <package android:name="com.google.android.youtube" />
+        <package android:name="com.android.vending" />
     </queries>
 
     <application
-        android:label="velhodozap"
+        android:label="Velho do Zap"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
