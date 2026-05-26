@@ -72,14 +72,14 @@ class _DialerScreenState extends State<DialerScreen> {
                       Expanded(
                         child: Text(
                           display,
-                          style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
+                          style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w900, color: Colors.white),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       IconButton(
                         onPressed: _digits.isEmpty ? null : _backspace,
-                        icon: const Icon(Icons.backspace_outlined),
+                        icon: const Icon(Icons.backspace_outlined, color: Colors.white),
                       ),
                     ],
                   ),
@@ -104,7 +104,7 @@ class _DialerScreenState extends State<DialerScreen> {
                         onTap: onTap,
                         child: Text(
                           label,
-                          style: TextStyle(fontSize: digitFontSize, fontWeight: FontWeight.w900),
+                          style: TextStyle(fontSize: digitFontSize, fontWeight: FontWeight.w900, color: Colors.white),
                         ),
                       );
                     }

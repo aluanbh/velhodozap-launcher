@@ -27,16 +27,19 @@ class StatusBar extends StatelessWidget {
     required int? batteryLevel,
     required bool charging,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final fg = isDark ? Colors.white : Colors.black87;
+    final bg = isDark ? Colors.white10 : Colors.black12;
     final display = id == StatusIconId.cellular ? _withBars(summary) : summary;
     final leading = switch (id) {
-      StatusIconId.battery => _BatteryGlyph(level: batteryLevel, charging: charging),
-      StatusIconId.wifi => const Icon(Icons.wifi, size: 22, color: Colors.white),
-      StatusIconId.cellular => const Icon(Icons.phone_android, size: 22, color: Colors.white),
-      StatusIconId.bluetooth => const Icon(Icons.bluetooth, size: 22, color: Colors.white),
+      StatusIconId.battery => _BatteryGlyph(level: batteryLevel, charging: charging, color: fg),
+      StatusIconId.wifi => Icon(Icons.wifi, size: 22, color: fg),
+      StatusIconId.cellular => Icon(Icons.phone_android, size: 22, color: fg),
+      StatusIconId.bluetooth => Icon(Icons.bluetooth, size: 22, color: fg),
     };
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.white10,
+        color: bg,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Padding(
@@ -57,7 +60,7 @@ class StatusBar extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     display.isEmpty ? '—' : display,
-                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: fg),
                     maxLines: 1,
                   ),
                 ),
@@ -264,14 +267,15 @@ class _HoldToActionState extends State<_HoldToAction> {
 class _BatteryGlyph extends StatelessWidget {
   final int? level;
   final bool charging;
+  final Color color;
 
-  const _BatteryGlyph({required this.level, required this.charging});
+  const _BatteryGlyph({required this.level, required this.charging, required this.color});
 
   @override
   Widget build(BuildContext context) {
     final pct = (level ?? 0).clamp(0, 100);
     final fill = pct / 100.0;
-    final fillColor = pct <= 15 ? Colors.redAccent : Colors.white;
+    final fillColor = pct <= 15 ? Colors.redAccent : color;
 
     return SizedBox(
       width: 28,
@@ -280,14 +284,14 @@ class _BatteryGlyph extends StatelessWidget {
         alignment: Alignment.center,
         children: [
           CustomPaint(
-            painter: _BatteryPainter(fill: fill, fillColor: fillColor),
+            painter: _BatteryPainter(fill: fill, fillColor: fillColor, strokeColor: color),
             size: const Size(28, 18),
           ),
           if (charging)
-            const Icon(
+            Icon(
               Icons.bolt,
               size: 16,
-              color: Colors.white,
+              color: color,
             ),
         ],
       ),
@@ -298,8 +302,9 @@ class _BatteryGlyph extends StatelessWidget {
 class _BatteryPainter extends CustomPainter {
   final double fill;
   final Color fillColor;
+  final Color strokeColor;
 
-  const _BatteryPainter({required this.fill, required this.fillColor});
+  const _BatteryPainter({required this.fill, required this.fillColor, required this.strokeColor});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -307,7 +312,7 @@ class _BatteryPainter extends CustomPainter {
     final cap = Rect.fromLTWH(size.width - 4, size.height / 2 - 3, 4, 6);
 
     final strokePaint = Paint()
-      ..color = Colors.white
+      ..color = strokeColor
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -326,6 +331,6 @@ class _BatteryPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BatteryPainter oldDelegate) {
-    return oldDelegate.fill != fill || oldDelegate.fillColor != fillColor;
+    return oldDelegate.fill != fill || oldDelegate.fillColor != fillColor || oldDelegate.strokeColor != strokeColor;
   }
 }
