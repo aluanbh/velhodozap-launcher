@@ -2009,7 +2009,7 @@ class _LegacyContactsScreenState extends State<LegacyContactsScreen> {
     return await fc.FlutterContacts.getContact(
       id,
       withProperties: true,
-      withAccounts: true,
+      withAccounts: false,
       withPhoto: true,
     );
   }

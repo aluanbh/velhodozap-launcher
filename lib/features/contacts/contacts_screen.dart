@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' as fc;
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:velhodozap/features/calls/calls.dart';
+import 'dart:ui' as ui;
+import 'package:android_intent_plus/android_intent.dart';
+import 'dart:io';
 
 enum ContactsDefaultTab {
   meusFavoritos,
@@ -75,7 +79,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     return await fc.FlutterContacts.getContact(
       id,
       withProperties: true,
-      withAccounts: true,
+      withAccounts: false,
       withPhoto: true,
     );
   }
@@ -83,11 +87,23 @@ class _ContactsScreenState extends State<ContactsScreen> {
   Future<void> _toggleStar(fc.Contact contact) async {
     final allowed = await fc.FlutterContacts.requestPermission(readonly: false);
     if (!allowed) return;
-    final full = await _getContactForUpdate(contact.id);
-    if (full == null) return;
-    full.isStarred = !contact.isStarred;
-    await full.update();
-    await _loadDeviceContacts();
+    try {
+      final full = await fc.FlutterContacts.getContact(
+        contact.id,
+        withProperties: true,
+        withAccounts: true,
+        withPhoto: true,
+      );
+      if (full == null) return;
+      full.isStarred = !contact.isStarred;
+      await full.update();
+      await _loadDeviceContacts();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não foi possível atualizar o favorito neste aparelho.')),
+      );
+    }
   }
 
   Future<void> _openDeviceEditor({fc.Contact? contact}) async {
@@ -292,8 +308,9 @@ class DeviceContactsList extends StatelessWidget {
       );
     }
 
+    final bottom = MediaQuery.of(context).padding.bottom;
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + bottom + 8),
       itemBuilder: (context, index) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final fg = isDark ? Colors.white : Colors.white;
@@ -463,15 +480,28 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
     try {
       final phone = '+55$digits';
       if (widget.contact == null) {
+        final account = await _pickInsertAccount();
+        if (account == null) {
+          await _fallbackToNativeInsert(name: name, phone: phone);
+          if (mounted) Navigator.of(context).pop(true);
+          return;
+        }
         final c = fc.Contact()
           ..displayName = name
           ..name = fc.Name(first: name)
           ..isStarred = _isStarred
           ..phones = [fc.Phone(phone)]
+          ..accounts = [account]
           ..photo = _photoBytes;
         await c.insert();
       } else {
-        final c = widget.contact!;
+        final c = await fc.FlutterContacts.getContact(
+          widget.contact!.id,
+          withProperties: true,
+          withAccounts: true,
+          withPhoto: true,
+        );
+        if (c == null) return;
         c.displayName = name;
         c.name.first = name;
         c.name.last = '';
@@ -485,9 +515,55 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
         await c.update();
       }
       if (mounted) Navigator.of(context).pop(true);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não foi possível salvar este contato.')),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
+  }
+
+  Future<fc.Account?> _pickInsertAccount() async {
+    if (!Platform.isAndroid) return fc.Account('', '', '', const []);
+    try {
+      final list = await fc.FlutterContacts.getContacts(withProperties: false, withAccounts: true, sorted: false);
+      for (final c in list) {
+        for (final a in c.accounts) {
+          final type = a.type.trim();
+          final name = a.name.trim();
+          if (type.isEmpty || name.isEmpty) continue;
+          final t = type.toLowerCase();
+          if (t.contains('whatsapp') ||
+              t.contains('telegram') ||
+              t.contains('skype') ||
+              t.contains('facebook') ||
+              t.contains('messenger') ||
+              t.contains('viber') ||
+              t.contains('signal')) {
+            continue;
+          }
+          return fc.Account('', a.type, a.name, const []);
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _fallbackToNativeInsert({required String name, required String phone}) async {
+    if (!Platform.isAndroid) return;
+    final intent = AndroidIntent(
+      action: 'android.intent.action.INSERT',
+      data: 'content://com.android.contacts/contacts',
+      arguments: {
+        'name': name,
+        'phone': phone,
+      },
+    );
+    await intent.launch();
   }
 
   Future<void> _pickFromGallery() async {
@@ -504,7 +580,9 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
     if (file == null) return;
     final bytes = await file.readAsBytes();
     if (!mounted) return;
-    setState(() => _photoBytes = bytes);
+    final cropped = await PhotoCropperDialog.crop(context, bytes);
+    if (!mounted) return;
+    setState(() => _photoBytes = cropped ?? bytes);
   }
 
   Future<void> _pickFromCamera() async {
@@ -521,7 +599,9 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
     if (file == null) return;
     final bytes = await file.readAsBytes();
     if (!mounted) return;
-    setState(() => _photoBytes = bytes);
+    final cropped = await PhotoCropperDialog.crop(context, bytes);
+    if (!mounted) return;
+    setState(() => _photoBytes = cropped ?? bytes);
   }
 
   Future<void> _delete() async {
@@ -543,7 +623,22 @@ class _DeviceContactEditScreenState extends State<DeviceContactEditScreen> {
       },
     );
     if (ok != true) return;
-    await c.delete();
+    try {
+      final full = await fc.FlutterContacts.getContact(
+        c.id,
+        withProperties: true,
+        withAccounts: true,
+        withPhoto: false,
+      );
+      if (full == null) return;
+      await full.delete();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não foi possível apagar este contato.')),
+      );
+      return;
+    }
     if (mounted) Navigator.of(context).pop(true);
   }
 
@@ -708,6 +803,193 @@ class ContactAvatar extends StatelessWidget {
               : Image.memory(memoryBytes!, width: size, height: size, fit: BoxFit.cover),
         ),
       ),
+    );
+  }
+}
+
+class PhotoCropperDialog extends StatefulWidget {
+  final Uint8List bytes;
+
+  const PhotoCropperDialog({required this.bytes, super.key});
+
+  static Future<Uint8List?> crop(BuildContext context, Uint8List bytes) async {
+    return await showDialog<Uint8List>(
+      context: context,
+      builder: (_) => PhotoCropperDialog(bytes: bytes),
+    );
+  }
+
+  @override
+  State<PhotoCropperDialog> createState() => _PhotoCropperDialogState();
+}
+
+class _PhotoCropperDialogState extends State<PhotoCropperDialog> {
+  final _boundaryKey = GlobalKey();
+  late final TransformationController _controller;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TransformationController();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _zoom(double delta) {
+    final m = _controller.value;
+    final scale = m.getMaxScaleOnAxis();
+    final next = (scale + delta).clamp(1.0, 5.0);
+    final center = const Offset(140, 140);
+    final newM = Matrix4.identity();
+    newM.setEntry(0, 0, next);
+    newM.setEntry(1, 1, next);
+    newM.setEntry(0, 3, center.dx * (1 - next));
+    newM.setEntry(1, 3, center.dy * (1 - next));
+    _controller.value = newM;
+  }
+
+  void _reset() {
+    _controller.value = Matrix4.identity();
+  }
+
+  Future<void> _confirm() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      final boundary = _boundaryKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) {
+        if (!mounted) return;
+        Navigator.of(context).pop(null);
+        return;
+      }
+
+      final img = await boundary.toImage(pixelRatio: 2);
+      final data = await img.toByteData(format: ui.ImageByteFormat.png);
+      if (data == null) {
+        if (!mounted) return;
+        Navigator.of(context).pop(null);
+        return;
+      }
+      final raw = data.buffer.asUint8List();
+      final resized = await _resizeToSquare(raw, 256);
+      if (!mounted) return;
+      Navigator.of(context).pop(resized);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<Uint8List> _resizeToSquare(Uint8List pngBytes, int size) async {
+    final codec = await ui.instantiateImageCodec(
+      pngBytes,
+      targetWidth: size,
+      targetHeight: size,
+    );
+    final frame = await codec.getNextFrame();
+    final out = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+    return out?.buffer.asUint8List() ?? pngBytes;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const cropSize = 280.0;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return AlertDialog(
+      title: const Text(
+        'Ajustar foto',
+        style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+      ),
+      content: SizedBox(
+        width: cropSize,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF121212) : Colors.black12,
+                ),
+                child: Stack(
+                  children: [
+                    RepaintBoundary(
+                      key: _boundaryKey,
+                      child: SizedBox(
+                        width: cropSize,
+                        height: cropSize,
+                        child: ClipRect(
+                          child: InteractiveViewer(
+                            transformationController: _controller,
+                            minScale: 1,
+                            maxScale: 5,
+                            panEnabled: true,
+                            scaleEnabled: true,
+                            boundaryMargin: const EdgeInsets.all(80),
+                            child: SizedBox(
+                              width: cropSize,
+                              height: cropSize,
+                              child: Image.memory(
+                                widget.bytes,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    IgnorePointer(
+                      child: Container(
+                        width: cropSize,
+                        height: cropSize,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: isDark ? Colors.white24 : Colors.black26,
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  onPressed: _saving ? null : () => _zoom(-0.3),
+                  icon: const Icon(Icons.remove),
+                ),
+                IconButton(
+                  onPressed: _saving ? null : _reset,
+                  icon: const Icon(Icons.refresh),
+                ),
+                IconButton(
+                  onPressed: _saving ? null : () => _zoom(0.3),
+                  icon: const Icon(Icons.add),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.of(context).pop(null),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _confirm,
+          child: const Text('Usar'),
+        ),
+      ],
     );
   }
 }
